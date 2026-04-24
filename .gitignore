@@ -1,0 +1,7 @@
+node_modules/
+
+dist/renderer.js
+dist/renderer.js.map
+dist/renderer.js.LICENSE.txt
+
+.DS_Store

@@ -1,564 +1,109 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
-  App,
-  Button,
-  Card,
-  ConfigProvider,
-  Descriptions,
-  Drawer,
-  Dropdown,
-  Empty,
-  Form,
-  Input,
-  Layout,
-  List,
-  Modal,
-  Popconfirm,
-  Progress,
-  Select,
-  Space,
-  Tag,
-  Timeline,
-  Typography,
-} from 'antd';
+import { App, Card, ConfigProvider, Empty, Form, Layout, Space } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import {
-  AppstoreOutlined,
-  ClearOutlined,
-  DeleteOutlined,
-  DownOutlined,
-  EditOutlined,
-  ExpandAltOutlined,
-  EyeOutlined,
-  FolderOpenOutlined,
-  HolderOutlined,
-  LeftOutlined,
-  MoreOutlined,
-  PauseCircleOutlined,
-  PlayCircleOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  RightOutlined,
-  SaveOutlined,
-  SettingOutlined,
-  ThunderboltOutlined,
-  UpOutlined,
-} from '@ant-design/icons';
-import { Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
-import { WebLinksAddon } from 'xterm-addon-web-links';
-import 'xterm/css/xterm.css';
 import './styles.css';
 
-const { Header, Sider, Content } = Layout;
-const { Title, Text, Paragraph } = Typography;
-const { TextArea } = Input;
+// Components
+import AppSider from './components/Layout/AppSider';
+import AppHeader from './components/Layout/AppHeader';
+import EnvironmentPage from './components/Environment/EnvironmentPage';
+import AgentList from './components/Agents/AgentList';
+import AgentMonitorPage from './components/Agents/AgentMonitorPage';
+import Overview from './components/Workspace/Overview';
+import TaskBoard from './components/Workspace/TaskBoard';
+import BugBoard from './components/Workspace/BugBoard';
+import TerminalCard from './components/Terminal/TerminalCard';
+import ProjectModal from './components/Modals/ProjectModal';
+import TaskModal from './components/Modals/TaskModal';
+import BugModal from './components/Modals/BugModal';
+import AgentModal from './components/Modals/AgentModal';
+import TaskDrawer from './components/Drawers/TaskDrawer';
+import BugDrawer from './components/Drawers/BugDrawer';
 
-const BOARD_STATUS_OPTIONS = [
-  { value: 'todo', label: '待处理', color: 'default' },
-  { value: 'in_progress', label: '进行中', color: 'processing' },
-  { value: 'blocked', label: '阻塞', color: 'warning' },
-  { value: 'suspended', label: '已挂起', color: 'volcano' },
-  { value: 'done', label: '已完成', color: 'success' },
-];
+// Utils & Constants
+import { getProjectMeta } from './utils';
 
-const PRIORITY_OPTIONS = [
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-  { value: 'critical', label: '紧急' },
-];
-
-const PRIORITY_META = {
-  low: { label: '低优先级', color: 'default' },
-  medium: { label: '中优先级', color: 'blue' },
-  high: { label: '高优先级', color: 'orange' },
-  critical: { label: '紧急', color: 'red' },
-};
-
-const EXECUTION_STATUS_META = {
-  idle: { label: '空闲', color: 'default' },
-  queued: { label: '排队中', color: 'default' },
-  analyzing: { label: '分析中', color: 'processing' },
-  planning: { label: '计划中', color: 'processing' },
-  developing: { label: '开发中', color: 'processing' },
-  reviewing: { label: '审查中', color: 'purple' },
-  testing: { label: '测试中', color: 'cyan' },
-  fixing: { label: '修复中', color: 'orange' },
-  committing: { label: '提交中', color: 'magenta' },
-  completed: { label: '已完成', color: 'success' },
-  failed: { label: '失败', color: 'error' },
-};
-
-const PROJECT_STATUS_META = {
-  idle: { label: '空闲', color: 'default' },
-  running: { label: '运行中', color: 'success' },
-  paused: { label: '已暂停', color: 'warning' },
-};
-
-function getBoardMeta(status) {
-  return BOARD_STATUS_OPTIONS.find((item) => item.value === status) || BOARD_STATUS_OPTIONS[0];
-}
-
-function getExecutionMeta(status) {
-  return EXECUTION_STATUS_META[status] || EXECUTION_STATUS_META.idle;
-}
-
-function getProjectMeta(status) {
-  return PROJECT_STATUS_META[status] || PROJECT_STATUS_META.idle;
-}
-
-function getPriorityMeta(priority) {
-  return PRIORITY_META[priority] || PRIORITY_META.medium;
-}
-
-function formatTime(value) {
-  if (!value) return '暂无';
-  return new Date(value).toLocaleString('zh-CN', { hour12: false });
-}
-
-function sanitizeTerminalOutput(value) {
-  if (!value) return '';
-
-  return String(value)
-    // Filter warning messages about stdin
-    .replace(/Warning: no stdin data received in \d+s,[^\n]*\n?/g, '')
-    // Filter long JSON lines that are protocol noise
-    .split('\n')
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return true; // Keep empty lines for formatting
-      // Filter long JSON objects that contain system/protocol fields
-      if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length > 200) {
-        return !(
-          trimmed.includes('"type":"system"') ||
-          trimmed.includes('"tools":[') ||
-          trimmed.includes('"permissionMode"') ||
-          trimmed.includes('"mcp__') ||
-          trimmed.includes('"api_retry"') ||
-          trimmed.includes('"cost_usd"') ||
-          trimmed.includes('"duration_ms"') ||
-          trimmed.includes('"input_json_delta"')
-        );
-      }
-      return true;
-    })
-    .join('\n');
-}
-
-function TaskDetailSection({ title, content }) {
-  return (
-    <div className="detail-section">
-      <Title level={5}>{title}</Title>
-      {content ? (
-        <Paragraph className="detail-content">{content}</Paragraph>
-      ) : (
-        <Text type="secondary">暂无内容</Text>
-      )}
-    </div>
-  );
-}
-
-function EnvironmentStatusCard({ title, installed, summary, details }) {
-  return (
-    <div className={`env-status-card ${installed ? 'is-ready' : 'is-error'}`}>
-      <div className="env-status-head">
-        <div className={`env-dot ${installed ? 'is-ready' : 'is-error'}`} />
-        <div>
-          <Text strong>{title}</Text>
-          <div className="env-summary">{summary}</div>
-        </div>
-      </div>
-      <Paragraph className="env-details">
-        {details || '暂无更多信息'}
-      </Paragraph>
-    </div>
-  );
-}
-
-function MetricTile({ label, value, hint, tone }) {
-  return (
-    <div className={`metric-tile ${tone ? `tone-${tone}` : ''}`}>
-      <Text className="metric-label">{label}</Text>
-      <div className="metric-value">{value}</div>
-      <Text className="metric-hint">{hint}</Text>
-    </div>
-  );
-}
-
-function NavButton({ active, icon, label, onClick, collapsed }) {
-  return (
-    <button
-      type="button"
-      className={active ? 'nav-button is-active' : 'nav-button'}
-      onClick={onClick}
-      title={collapsed ? label : undefined}
-    >
-      {icon}
-      {!collapsed && <span>{label}</span>}
-    </button>
-  );
-}
-
-function EnvironmentPage({ environment, onRefresh }) {
-  const checks = [
-    {
-      key: 'claude',
-      title: 'Claude Code',
-      installed: Boolean(environment.claude?.installed),
-      summary: environment.claude?.installed ? 'CLI 已连接，可直接执行自动开发任务' : 'CLI 尚未就绪',
-      details: environment.claude?.installed
-        ? `${environment.claude.version}\n${environment.claude.authStatus || ''}`
-        : environment.claude?.error,
-      action: environment.claude?.installed ? '可开始项目自动化流程' : '请先完成 CLI 安装或鉴权',
-    },
-    {
-      key: 'git',
-      title: 'Git',
-      installed: Boolean(environment.git?.installed),
-      summary: environment.git?.installed ? '版本控制环境可用' : 'Git 尚未就绪',
-      details: environment.git?.installed ? environment.git.version : environment.git?.error,
-      action: environment.git?.installed ? '支持拉取、提交与变更追踪' : '请先安装 Git 或检查 PATH',
-    },
-  ];
-
-  const readyCount = checks.filter((item) => item.installed).length;
-  const pendingChecks = checks.filter((item) => !item.installed);
-  const nextSteps = pendingChecks.length
-    ? pendingChecks.map((item) => `${item.title} 需要处理：${item.action}`)
-    : [
-        '当前基础依赖已经就绪，可以直接回到项目工作台启动自动开发流程。',
-        '如果后续增加 Node、pnpm、Python 等检查项，这里会继续集中展示。',
-      ];
-
-  return (
-    <div className="environment-page">
-      <Card className="environment-hero">
-        <div className="environment-hero-head">
-          <div>
-            <Title level={3}>本地环境检查</Title>
-            <Paragraph className="environment-hero-copy">
-              这里集中检查 VCT 运行依赖，避免把环境诊断和项目工作台混在一起。
-            </Paragraph>
-          </div>
-          <Button type="primary" icon={<ReloadOutlined />} onClick={onRefresh}>
-            重新检查
-          </Button>
-        </div>
-
-        <div className="overview-metrics">
-          <MetricTile label="检查项" value={checks.length} hint="当前内置环境检查项数" />
-          <MetricTile label="已通过" value={readyCount} hint="可直接投入使用的能力" tone="success" />
-          <MetricTile
-            label="待处理"
-            value={checks.length - readyCount}
-            hint={checks.length - readyCount ? '建议优先补齐基础依赖' : '当前环境完整'}
-            tone={checks.length - readyCount ? 'warning' : 'accent'}
-          />
-          <MetricTile
-            label="整体状态"
-            value={readyCount === checks.length ? '就绪' : '待完善'}
-            hint="环境状态会影响后续自动执行"
-            tone="accent"
-          />
-        </div>
-      </Card>
-
-      <div className="environment-grid">
-        {checks.map((item) => (
-          <Card key={item.key} className="environment-panel" title={item.title}>
-            <EnvironmentStatusCard
-              title={item.title}
-              installed={item.installed}
-              summary={item.summary}
-              details={item.details}
-            />
-            <div className="environment-note">
-              <Text strong>{item.action}</Text>
-            </div>
-          </Card>
-        ))}
-      </div>
-
-      <div className="environment-bottom-grid">
-        <Card title="下一步建议" className="environment-panel">
-          <div className="environment-checklist">
-            {nextSteps.map((step) => (
-              <div key={step} className="environment-checklist-item">
-                <span className="environment-checklist-dot" />
-                <Text>{step}</Text>
-              </div>
-            ))}
-          </div>
-        </Card>
-
-        <Card title="诊断摘要" className="environment-panel">
-          <div className="environment-summary-stack">
-            <div className="environment-summary-item">
-              <Text className="metric-label">Claude Code</Text>
-              <Text strong>{environment.claude?.installed ? '已连接并鉴权' : '未就绪'}</Text>
-            </div>
-            <div className="environment-summary-item">
-              <Text className="metric-label">Git</Text>
-              <Text strong>{environment.git?.installed ? '可用于拉取与提交' : '未就绪'}</Text>
-            </div>
-            <div className="environment-summary-item">
-              <Text className="metric-label">推荐动作</Text>
-              <Text strong>{pendingChecks.length ? '先补齐依赖，再启动项目' : '可以返回工作台开始执行'}</Text>
-            </div>
-          </div>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-function TerminalPanel({ projectId }) {
-  const containerRef = useRef(null);
-  const terminalRef = useRef(null);
-  const fitRef = useRef(null);
-  const outputBufferRef = useRef('');
-  const [showScrollButton, setShowScrollButton] = useState(false);
-  const [outputStats, setOutputStats] = useState({ lines: 0, rate: 0 });
-  const statsRef = useRef({ lines: 0, lastUpdate: Date.now(), chunks: 0 });
-
-  useEffect(() => {
-    if (!containerRef.current || terminalRef.current) {
-      return undefined;
-    }
-
-    const terminal = new Terminal({
-      convertEol: true,
-      theme: {
-        background: '#101828',
-        foreground: '#e2e8f0',
-        cursor: '#7dd3fc',
-        cursorBlink: true,
-        cursorStyle: 'block',
-        selectionBackground: 'rgba(125, 211, 252, 0.25)',
-        black: '#101828',
-        brightBlack: '#555',
-        red: '#e06c75',
-        brightRed: '#e06c75',
-        green: '#98c379',
-        brightGreen: '#98c379',
-        yellow: '#e5c07b',
-        brightYellow: '#e5c07b',
-        blue: '#61afef',
-        brightBlue: '#61afef',
-        magenta: '#c678dd',
-        brightMagenta: '#c678dd',
-        cyan: '#56b6c2',
-        brightCyan: '#56b6c2',
-        white: '#abb2bf',
-        brightWhite: '#e0e0e0',
-      },
-      fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
-      fontSize: 13,
-      lineHeight: 1.4,
-      scrollback: 8000,
-    });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.loadAddon(new WebLinksAddon());
-    terminal.open(containerRef.current);
-    fitAddon.fit();
-    terminalRef.current = terminal;
-    fitRef.current = fitAddon;
-
-    // Track scroll position
-    terminal.onScroll(() => {
-      const viewport = terminal.buffer.active.viewportY;
-      const scrollback = terminal.buffer.active.length - terminal.rows;
-      setShowScrollButton(scrollback - viewport > 5);
-    });
-
-    const ro = new ResizeObserver(() => {
-      try { fitRef.current?.fit(); } catch (e) {}
-    });
-    ro.observe(containerRef.current);
-
-    return () => {
-      ro.disconnect();
-      terminal.dispose();
-      terminalRef.current = null;
-      fitRef.current = null;
-      outputBufferRef.current = '';
-    };
-  }, []);
-
-  // Update output stats periodically
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const elapsed = (now - statsRef.current.lastUpdate) / 1000;
-      if (elapsed >= 1) {
-        setOutputStats({
-          lines: statsRef.current.lines,
-          rate: Math.round(statsRef.current.chunks / elapsed),
-        });
-        statsRef.current.chunks = 0;
-        statsRef.current.lastUpdate = now;
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // Load history when project changes
-  useEffect(() => {
-    let active = true;
-
-    async function loadHistory() {
-      if (!projectId || !terminalRef.current) return;
-      const history = await window.vct.getTerminalHistory(projectId);
-      if (active && terminalRef.current) {
-        const sanitized = sanitizeTerminalOutput(history?.content || '');
-        outputBufferRef.current = sanitized;
-        terminalRef.current.clear();
-        terminalRef.current.write(sanitized);
-        statsRef.current.lines = sanitized.split('\n').length;
-        try { fitRef.current?.fit(); } catch (e) {}
-      }
-    }
-
-    loadHistory();
-
-    return () => {
-      active = false;
-    };
-  }, [projectId]);
-
-  // Listen for real-time data with incremental writes
-  useEffect(() => {
-    const onData = ({ projectId: incomingProjectId, data, seq }) => {
-      if (incomingProjectId !== projectId || !terminalRef.current) return;
-
-      const sanitized = sanitizeTerminalOutput(data);
-      if (!sanitized) return;
-
-      // Incremental comparison: only write new content
-      if (seq !== undefined && seq > 0) {
-        // Batched data from output batcher - write incrementally
-        outputBufferRef.current += sanitized;
-        terminalRef.current.write(sanitized);
-      } else {
-        // Immediate data (phase headers, etc.) or legacy data
-        outputBufferRef.current += sanitized;
-        terminalRef.current.write(sanitized);
-      }
-
-      // Update stats
-      statsRef.current.lines += sanitized.split('\n').length - 1;
-      statsRef.current.chunks += 1;
-
-      // Auto-scroll to bottom if user is near the bottom
-      const term = terminalRef.current;
-      if (term.buffer?.active) {
-        const viewport = term.buffer.active.viewportY;
-        const scrollback = term.buffer.active.length - term.rows;
-        if (scrollback - viewport < 5) {
-          term.scrollToBottom();
-        }
-      }
-    };
-
-    const onClear = ({ projectId: incomingProjectId }) => {
-      if (incomingProjectId === projectId && terminalRef.current) {
-        terminalRef.current.clear();
-        outputBufferRef.current = '';
-        statsRef.current.lines = 0;
-      }
-    };
-
-    window.vct.onTerminalData(onData);
-    window.vct.onTerminalClear(onClear);
-
-    return () => {
-      window.vct.removeTerminalDataListener();
-      window.vct.removeTerminalClearListener();
-    };
-  }, [projectId]);
-
-  const scrollToBottom = () => {
-    terminalRef.current?.scrollToBottom();
-    setShowScrollButton(false);
-  };
-
-  return (
-    <div className="terminal-container">
-      <div
-        ref={containerRef}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflow: 'hidden',
-          background: '#101828',
-        }}
-      />
-      {showScrollButton && (
-        <button className="terminal-scroll-btn" onClick={scrollToBottom} title="滚动到底部">
-          <DownOutlined />
-        </button>
-      )}
-    </div>
-  );
-}
+const { Content } = Layout;
 
 function AppView() {
   const { message } = App.useApp();
+
+  // State
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [tasks, setTasks] = useState([]);
+  const [bugs, setBugs] = useState([]);
   const [progress, setProgress] = useState(null);
-  const [environment, setEnvironment] = useState({ claude: null, git: null });
+  const [environment, setEnvironment] = useState({ claude: null, git: null, cliAgents: {} });
+  const [cliAgents, setCliAgents] = useState({});
+  const [agents, setAgents] = useState([]);
+
+  // Modal & Drawer state
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+  const [bugModalOpen, setBugModalOpen] = useState(false);
+  const [bugDrawerOpen, setBugDrawerOpen] = useState(false);
+  const [agentModalOpen, setAgentModalOpen] = useState(false);
+
+  // Editing state
   const [editingProject, setEditingProject] = useState(null);
   const [editingTask, setEditingTask] = useState(null);
+  const [editingBug, setEditingBug] = useState(null);
+  const [editingAgent, setEditingAgent] = useState(null);
   const [activeTask, setActiveTask] = useState(null);
+  const [activeBug, setActiveBug] = useState(null);
+
+  // UI state
   const [draggingTaskId, setDraggingTaskId] = useState(null);
+  const [draggingBugId, setDraggingBugId] = useState(null);
   const [activeView, setActiveView] = useState('workspace');
-  const [terminalFullscreenOpen, setTerminalFullscreenOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [overviewCollapsed, setOverviewCollapsed] = useState(false);
   const [boardSearchText, setBoardSearchText] = useState('');
   const [boardStatusFilter, setBoardStatusFilter] = useState('all');
+  const [bugSeverityFilter, setBugSeverityFilter] = useState('all');
+  const [bugSourceFilter, setBugSourceFilter] = useState('all');
+  const [isFixingAllBugs, setIsFixingAllBugs] = useState(false);
   const [siderCollapsed, setSiderCollapsed] = useState(false);
+
+  // Forms
   const [projectForm] = Form.useForm();
   const [taskForm] = Form.useForm();
+  const [bugForm] = Form.useForm();
+  const [agentForm] = Form.useForm();
 
+  // Computed values
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) || null,
     [projects, selectedProjectId]
   );
-
-  const completionStats = useMemo(() => {
-    const doneCount = tasks.filter((task) => task.boardStatus === 'done').length;
-    const suspendedCount = tasks.filter((task) => task.boardStatus === 'suspended').length;
-    const executableCount = tasks.filter((task) => task.boardStatus !== 'blocked' && task.boardStatus !== 'suspended').length;
-    const blockedCount = tasks.filter((task) => task.boardStatus === 'blocked').length;
-    return {
-      total: tasks.length,
-      done: doneCount,
-      blocked: blockedCount,
-      suspended: suspendedCount,
-      percent: executableCount > 0 ? Math.round((doneCount / executableCount) * 100) : 0,
-    };
-  }, [tasks]);
 
   const activeTaskTitle = useMemo(() => {
     if (!progress?.currentTaskId) return '暂无';
     return tasks.find((task) => task.id === progress.currentTaskId)?.title || progress.currentTaskId;
   }, [progress, tasks]);
 
-  const selectedProjectStatus = selectedProject ? getProjectMeta(selectedProject.status) : getProjectMeta();
-  const currentPhaseMeta = getExecutionMeta(progress?.currentPhase);
-
+  // Data loading functions
   async function loadEnvironment() {
-    const [claude, git] = await Promise.all([window.vct.checkClaude(), window.vct.checkGit()]);
-    setEnvironment({ claude, git });
+    const [claude, git, cliAgentsResult] = await Promise.all([
+      window.vct.checkClaude(),
+      window.vct.checkGit(),
+      window.vct.checkAllCLIs().catch(() => ({})),
+    ]);
+    setEnvironment({ claude, git, cliAgents: cliAgentsResult });
+    setCliAgents(cliAgentsResult);
+  }
+
+  async function loadAgents() {
+    try {
+      const agentList = await window.vct.listAgents();
+      setAgents(agentList);
+    } catch (e) {
+      console.error('Failed to load agents:', e);
+      setAgents([]);
+    }
   }
 
   async function loadProjects() {
@@ -575,13 +120,16 @@ function AppView() {
   async function loadProjectDetails(projectId) {
     if (!projectId) {
       setTasks([]);
+      setBugs([]);
       setProgress(null);
       setActiveTask(null);
+      setActiveBug(null);
       return;
     }
 
-    const [taskList, progressSnapshot, engineStatus] = await Promise.all([
+    const [taskList, bugList, progressSnapshot, engineStatus] = await Promise.all([
       window.vct.listTasks(projectId),
+      window.vct.listBugs(projectId),
       window.vct.getProgress(projectId),
       window.vct.getEngineStatus(projectId),
     ]);
@@ -589,28 +137,36 @@ function AppView() {
     if (engineStatus.status === 'running' && !engineStatus.isRunning) {
       const recovery = await window.vct.recoverProject(projectId);
       if (recovery.recovered) {
-        const [recoveredTasks, recoveredProgress, recoveredProjects] = await Promise.all([
+        const [recoveredTasks, recoveredBugs, recoveredProgress, recoveredProjects] = await Promise.all([
           window.vct.listTasks(projectId),
+          window.vct.listBugs(projectId),
           window.vct.getProgress(projectId),
           window.vct.listProjects(),
         ]);
         setProjects(recoveredProjects);
         setTasks(recoveredTasks);
+        setBugs(recoveredBugs);
         setProgress(recoveredProgress);
         return;
       }
     }
 
     setTasks(taskList);
+    setBugs(bugList);
     setProgress(progressSnapshot);
     if (activeTask) {
       setActiveTask(taskList.find((task) => task.id === activeTask.id) || null);
     }
+    if (activeBug) {
+      setActiveBug(bugList.find((bug) => bug.id === activeBug.id) || null);
+    }
   }
 
+  // Effects
   useEffect(() => {
     loadEnvironment();
     loadProjects();
+    loadAgents();
 
     window.vct.onEngineStatusChange(({ projectId, status }) => {
       setProjects((current) => current.map((project) => (
@@ -627,9 +183,16 @@ function AppView() {
       }
     });
 
+    window.vct.onBugStatusChange(({ projectId }) => {
+      if (projectId === selectedProjectId) {
+        loadProjectDetails(projectId);
+      }
+    });
+
     return () => {
       window.vct.removeEngineStatusListener();
       window.vct.removeTaskStatusListener();
+      window.vct.removeBugStatusListener();
     };
   }, [selectedProjectId, activeTask]);
 
@@ -637,6 +200,7 @@ function AppView() {
     loadProjectDetails(selectedProjectId);
   }, [selectedProjectId]);
 
+  // Project handlers
   function openCreateProjectModal() {
     setEditingProject(null);
     projectForm.setFieldsValue({
@@ -659,10 +223,10 @@ function AppView() {
     setProjectModalOpen(true);
   }
 
-  async function handleChooseDirectory(fieldName = 'workDir') {
+  async function handleChooseDirectory() {
     const selectedPath = await window.vct.chooseProjectDirectory();
     if (selectedPath) {
-      projectForm.setFieldValue(fieldName, selectedPath);
+      projectForm.setFieldValue('workDir', selectedPath);
     }
   }
 
@@ -696,6 +260,7 @@ function AppView() {
     await loadProjects();
   }
 
+  // Task handlers
   function openCreateTaskModal() {
     setEditingTask(null);
     taskForm.setFieldsValue({
@@ -703,6 +268,7 @@ function AppView() {
       description: '',
       priority: 'medium',
       boardStatus: 'todo',
+      agentId: '',
     });
     setTaskModalOpen(true);
   }
@@ -714,6 +280,7 @@ function AppView() {
       description: task.description,
       priority: task.priority,
       boardStatus: task.boardStatus,
+      agentId: task.agentId || '',
     });
     setTaskModalOpen(true);
   }
@@ -804,6 +371,236 @@ function AppView() {
     await loadProjectDetails(selectedProjectId);
   }
 
+  // Bug handlers
+  function openCreateBugModal() {
+    setEditingBug(null);
+    bugForm.setFieldsValue({
+      title: '',
+      description: '',
+      severity: 'medium',
+      source: 'manual',
+      boardStatus: 'todo',
+      agentId: '',
+      relatedTaskId: '',
+      filepaths: '',
+      reproductionSteps: '',
+      stackTrace: '',
+    });
+    setBugModalOpen(true);
+  }
+
+  function openEditBugModal(bug) {
+    setEditingBug(bug);
+    bugForm.setFieldsValue({
+      title: bug.title,
+      description: bug.description,
+      severity: bug.severity,
+      source: bug.source,
+      boardStatus: bug.boardStatus,
+      agentId: bug.agentId || '',
+      relatedTaskId: bug.relatedTaskId || '',
+      filepaths: bug.filepaths?.join('\n') || '',
+      reproductionSteps: bug.reproductionSteps || '',
+      stackTrace: bug.stackTrace || '',
+    });
+    setBugModalOpen(true);
+  }
+
+  async function handleSaveBug() {
+    if (!selectedProjectId) return;
+    const values = await bugForm.validateFields();
+    const bugData = {
+      ...values,
+      filepaths: values.filepaths ? values.filepaths.split('\n').filter(Boolean) : [],
+    };
+    setLoading(true);
+    try {
+      if (editingBug) {
+        await window.vct.updateBug(selectedProjectId, editingBug.id, bugData);
+        message.success('Bug 已更新');
+      } else {
+        await window.vct.createBug(selectedProjectId, bugData);
+        message.success('Bug 已创建');
+      }
+      setBugModalOpen(false);
+      setEditingBug(null);
+      bugForm.resetFields();
+      await loadProjectDetails(selectedProjectId);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSaveAndFixBug() {
+    if (!selectedProjectId) return;
+    const values = await bugForm.validateFields();
+    const bugData = {
+      ...values,
+      filepaths: values.filepaths ? values.filepaths.split('\n').filter(Boolean) : [],
+    };
+    setLoading(true);
+    try {
+      let savedBug;
+      if (editingBug) {
+        savedBug = await window.vct.updateBug(selectedProjectId, editingBug.id, bugData);
+        message.success('Bug 已更新');
+      } else {
+        savedBug = await window.vct.createBug(selectedProjectId, bugData);
+        message.success('Bug 已创建');
+      }
+      setBugModalOpen(false);
+      setEditingBug(null);
+      bugForm.resetFields();
+      if (savedBug?.id) {
+        const result = await window.vct.fixSingleBug(selectedProjectId, savedBug.id);
+        if (result.success) {
+          message.success('Bug 已修复');
+        } else {
+          message.error(result.error || '修复失败');
+        }
+      }
+      await loadProjectDetails(selectedProjectId);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDeleteBug(bugId) {
+    if (!selectedProjectId) return;
+    await window.vct.deleteBug(selectedProjectId, bugId);
+    message.success('Bug 已删除');
+    if (activeBug?.id === bugId) {
+      setBugDrawerOpen(false);
+      setActiveBug(null);
+    }
+    await loadProjectDetails(selectedProjectId);
+  }
+
+  async function handleBugStatusChange(bugId, boardStatus) {
+    if (!selectedProjectId) return;
+    await window.vct.updateBug(selectedProjectId, bugId, { boardStatus });
+    await loadProjectDetails(selectedProjectId);
+  }
+
+  async function reorderBugs(sourceId, targetId) {
+    if (!selectedProjectId || sourceId === targetId) return;
+    const ordered = [...bugs];
+    const fromIndex = ordered.findIndex((bug) => bug.id === sourceId);
+    const toIndex = ordered.findIndex((bug) => bug.id === targetId);
+    if (fromIndex < 0 || toIndex < 0) return;
+
+    const [moved] = ordered.splice(fromIndex, 1);
+    ordered.splice(toIndex, 0, moved);
+    const payload = ordered.map((bug, index) => ({ id: bug.id, order: index + 1 }));
+    await window.vct.reorderBugs(selectedProjectId, payload);
+    setDraggingBugId(null);
+    await loadProjectDetails(selectedProjectId);
+  }
+
+  async function handleMoveBugToFirst(bugId) {
+    if (!selectedProjectId) return;
+    await window.vct.moveBugToFirst(selectedProjectId, bugId);
+    message.success('Bug 已移到最前面');
+    await loadProjectDetails(selectedProjectId);
+  }
+
+  async function handleFixSingleBug(bugId) {
+    if (!selectedProjectId) return;
+    const result = await window.vct.fixSingleBug(selectedProjectId, bugId);
+    if (result.success) {
+      message.success('Bug 已修复');
+    } else {
+      message.error(result.error || '修复失败');
+    }
+    await loadProjectDetails(selectedProjectId);
+  }
+
+  async function handleFixAllBugs() {
+    if (!selectedProjectId) return;
+    setIsFixingAllBugs(true);
+    const result = await window.vct.fixAllBugs(selectedProjectId);
+    setIsFixingAllBugs(false);
+    if (result.success) {
+      message.success(result.message);
+    } else {
+      message.error(result.error || '批量修复失败');
+    }
+    await loadProjectDetails(selectedProjectId);
+  }
+
+  async function handlePauseBugFix() {
+    if (!selectedProjectId) return;
+    const result = await window.vct.pauseBugFix(selectedProjectId);
+    setIsFixingAllBugs(false);
+    if (result.success) {
+      message.success(result.message);
+    } else {
+      message.error(result.error || '暂停失败');
+    }
+  }
+
+  // Agent handlers
+  function openCreateAgentModal() {
+    setEditingAgent(null);
+    agentForm.setFieldsValue({
+      name: '',
+      description: '',
+      cliType: 'claude-code',
+      systemPrompt: '',
+      model: '',
+      apiBaseUrl: '',
+      apiKey: '',
+      maxTurns: 30,
+      permissionMode: 'bypassPermissions',
+      enabled: true,
+    });
+    setAgentModalOpen(true);
+  }
+
+  function openEditAgentModal(agent) {
+    setEditingAgent(agent);
+    agentForm.setFieldsValue({
+      name: agent.name,
+      description: agent.description,
+      cliType: agent.cliType,
+      systemPrompt: agent.systemPrompt || '',
+      model: agent.model || '',
+      apiBaseUrl: agent.apiBaseUrl || '',
+      apiKey: agent.apiKey || '',
+      maxTurns: agent.maxTurns || 30,
+      permissionMode: agent.permissionMode || 'bypassPermissions',
+      enabled: agent.enabled !== false,
+    });
+    setAgentModalOpen(true);
+  }
+
+  async function handleSaveAgent() {
+    const values = await agentForm.validateFields();
+    setLoading(true);
+    try {
+      if (editingAgent) {
+        await window.vct.updateAgent(editingAgent.id, values);
+        message.success('Agent 已更新');
+      } else {
+        await window.vct.createAgent(values);
+        message.success('Agent 已创建');
+      }
+      setAgentModalOpen(false);
+      setEditingAgent(null);
+      agentForm.resetFields();
+      await loadAgents();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDeleteAgent(agentId) {
+    await window.vct.deleteAgent(agentId);
+    message.success('Agent 已删除');
+    await loadAgents();
+  }
+
+  // Engine handlers
   async function handleStartProject() {
     if (!selectedProjectId) return;
     const result = await window.vct.startProject(selectedProjectId);
@@ -828,620 +625,258 @@ function AppView() {
     }
   }
 
-  const projectMenuItems = (project) => [
-    {
-      key: 'edit',
-      label: '编辑项目',
-      icon: <EditOutlined />,
-      onClick: () => openEditProjectModal(project),
-    },
-    {
-      key: 'delete',
-      label: (
-        <Popconfirm
-          title="确认移除项目？"
-          description="仅删除 VCT 管理记录，不会删除工作目录源码。"
-          onConfirm={() => handleDeleteProject(project.id)}
-        >
-          <span>删除项目</span>
-        </Popconfirm>
-      ),
-      icon: <DeleteOutlined />,
-    },
-  ];
+  async function handleClearTerminalHistory() {
+    await window.vct.clearTerminalHistory(selectedProjectId);
+    message.success('日志已清除');
+  }
 
+  // Render
   return (
     <Layout className="app-shell">
-      <Sider
-        width={260}
-        collapsedWidth={64}
+      <AppSider
         collapsed={siderCollapsed}
-        className="project-sider"
-        trigger={null}
-      >
-        <div className="sider-header">
-          {!siderCollapsed && (
-            <div className="brand-block">
-              <Title level={4}>VCT</Title>
-            </div>
-          )}
-          <button
-            type="button"
-            className="sider-collapse-btn"
-            onClick={() => setSiderCollapsed(!siderCollapsed)}
-            title={siderCollapsed ? '展开侧边栏' : '收起侧边栏'}
-          >
-            {siderCollapsed ? <RightOutlined /> : <LeftOutlined />}
-          </button>
-        </div>
-
-        <div className="side-nav">
-          <NavButton
-            active={activeView === 'workspace'}
-            icon={<AppstoreOutlined />}
-            label="项目工作台"
-            onClick={() => setActiveView('workspace')}
-            collapsed={siderCollapsed}
-          />
-          <NavButton
-            active={activeView === 'environment'}
-            icon={<SettingOutlined />}
-            label="本地环境"
-            onClick={() => setActiveView('environment')}
-            collapsed={siderCollapsed}
-          />
-        </div>
-
-        {!siderCollapsed && (
-          <>
-            <div className="section-header">
-              <Title level={5}>项目列表</Title>
-              <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openCreateProjectModal}>
-                新建
-              </Button>
-            </div>
-
-            <List
-              className="project-list"
-              dataSource={projects}
-              locale={{ emptyText: <Empty description="还没有项目" /> }}
-              renderItem={(project) => {
-                const meta = getProjectMeta(project.status);
-                return (
-                  <List.Item
-                    className={project.id === selectedProjectId ? 'project-item project-item-active' : 'project-item'}
-                    onClick={() => {
-                      setSelectedProjectId(project.id);
-                      setActiveView('workspace');
-                    }}
-                  >
-                    <div className="project-item-inner">
-                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                        <Space className="space-between full-width">
-                          <Text strong className="project-name-text">{project.name}</Text>
-                          <Dropdown menu={{ items: projectMenuItems(project) }} trigger={['click']}>
-                            <Button
-                              size="small"
-                              type="text"
-                              icon={<MoreOutlined />}
-                              onClick={(event) => event.stopPropagation()}
-                            />
-                          </Dropdown>
-                        </Space>
-                        <div className="project-item-meta">
-                          <Tag color={meta.color} style={{ margin: 0 }}>{meta.label}</Tag>
-                        </div>
-                      </Space>
-                    </div>
-                  </List.Item>
-                );
-              }}
-            />
-          </>
-        )}
-
-        {siderCollapsed && (
-          <div className="sider-collapsed-projects">
-            {projects.slice(0, 5).map((project) => {
-              const meta = getProjectMeta(project.status);
-              return (
-                <button
-                  key={project.id}
-                  type="button"
-                  className={`sider-project-icon ${project.id === selectedProjectId ? 'is-active' : ''}`}
-                  onClick={() => {
-                    setSelectedProjectId(project.id);
-                    setActiveView('workspace');
-                  }}
-                  title={project.name}
-                >
-                  <span className="sider-project-dot" style={{ background: meta.color === 'success' ? '#22c55e' : meta.color === 'warning' ? '#f59e0b' : '#6b7280' }} />
-                </button>
-              );
-            })}
-            {projects.length > 5 && (
-              <Text className="sider-project-more">+{projects.length - 5}</Text>
-            )}
-          </div>
-        )}
-      </Sider>
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        activeView={activeView}
+        onToggleCollapse={() => setSiderCollapsed(!siderCollapsed)}
+        onSelectProject={setSelectedProjectId}
+        onChangeView={setActiveView}
+        onEditProject={openEditProjectModal}
+        onDeleteProject={handleDeleteProject}
+        onCreateProject={openCreateProjectModal}
+      />
 
       <Layout>
-        <Header className="top-header">
-          {activeView === 'environment' ? (
-            <div className="header-bar">
-              <div className="header-copy">
-                <Title level={4} style={{ marginBottom: 0 }}>本地环境</Title>
-                <Text type="secondary">集中查看 Claude Code、Git 以及后续扩展的运行依赖</Text>
-              </div>
-              <Space>
-                <Button icon={<ReloadOutlined />} onClick={loadEnvironment}>
-                  重新检查
-                </Button>
-              </Space>
-            </div>
-          ) : selectedProject ? (
-            <div className="header-bar">
-              <div className="header-copy">
-                <Title level={4} style={{ marginBottom: 0 }}>{selectedProject.name}</Title>
-                <Text type="secondary">{selectedProject.description || '本地 Claude Code 自动开发项目'}</Text>
-                <div className="header-meta-row">
-                  <Tag color={selectedProjectStatus.color}>{selectedProjectStatus.label}</Tag>
-                  <Tag color={currentPhaseMeta.color}>{currentPhaseMeta.label}</Tag>
-                  <Text type="secondary">当前任务：{activeTaskTitle}</Text>
-                </div>
-              </div>
-              <Space>
-                <Button icon={<EditOutlined />} onClick={() => openEditProjectModal(selectedProject)}>
-                  项目设置
-                </Button>
-              </Space>
-            </div>
-          ) : (
-            <Title level={4} style={{ marginBottom: 0 }}>选择或创建项目</Title>
-          )}
-        </Header>
+        <AppHeader
+          activeView={activeView}
+          selectedProject={selectedProject}
+          progress={{ ...progress, currentTaskTitle: activeTaskTitle }}
+          onEditProject={openEditProjectModal}
+          onRefreshEnvironment={loadEnvironment}
+        />
 
         <Content className="content-shell">
           {activeView === 'environment' ? (
             <div className="column-scroll">
               <EnvironmentPage environment={environment} onRefresh={loadEnvironment} />
             </div>
+          ) : activeView === 'agents' ? (
+            <div className="column-scroll">
+              <AgentList
+                agents={agents}
+                onEdit={(agent) => {
+                  if (agent) {
+                    openEditAgentModal(agent);
+                  } else {
+                    openCreateAgentModal();
+                  }
+                }}
+                onDelete={handleDeleteAgent}
+              />
+            </div>
+          ) : activeView === 'agent-monitor' ? (
+            <div className="column-scroll">
+              <AgentMonitorPage
+                agents={agents}
+                cliAgents={cliAgents}
+                projects={projects}
+                onProjectSelect={setSelectedProjectId}
+                onViewChange={setActiveView}
+              />
+            </div>
           ) : !selectedProject ? (
             <Card>
               <Empty description="先创建一个项目，再开始自动开发流程" />
             </Card>
+          ) : activeView === 'bugs' ? (
+            <div className="workspace-grid">
+              <div className="workspace-main column-scroll">
+                <BugBoard
+                  bugs={bugs}
+                  activeBugId={activeBug?.id}
+                  draggingBugId={draggingBugId}
+                  boardSearchText={boardSearchText}
+                  boardStatusFilter={boardStatusFilter}
+                  severityFilter={bugSeverityFilter}
+                  sourceFilter={bugSourceFilter}
+                  isFixingAll={isFixingAllBugs}
+                  onSearchChange={setBoardSearchText}
+                  onStatusFilterChange={setBoardStatusFilter}
+                  onSeverityFilterChange={setBugSeverityFilter}
+                  onSourceFilterChange={setBugSourceFilter}
+                  onDragStart={setDraggingBugId}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={reorderBugs}
+                  onDragEnd={() => setDraggingBugId(null)}
+                  onBugClick={(bug) => {
+                    setActiveBug(bug);
+                    setBugDrawerOpen(true);
+                  }}
+                  onBugEdit={openEditBugModal}
+                  onBugDelete={handleDeleteBug}
+                  onBugStatusChange={handleBugStatusChange}
+                  onMoveToFirst={handleMoveBugToFirst}
+                  onFixSingle={handleFixSingleBug}
+                  onFixAll={handleFixAllBugs}
+                  onPauseFix={handlePauseBugFix}
+                />
+              </div>
+
+              <div className="workspace-side column-scroll">
+                <TerminalCard
+                  projectId={selectedProjectId}
+                  project={selectedProject}
+                  progress={progress}
+                  onClearHistory={handleClearTerminalHistory}
+                />
+              </div>
+            </div>
           ) : (
             <div className="workspace-grid">
               <div className="workspace-main column-scroll">
                 <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                  <Card
-                    className="hero-card"
-                    title={
-                      <div className="space-between full-width" style={{ cursor: 'pointer', paddingRight: 8 }} onClick={() => setOverviewCollapsed(!overviewCollapsed)}>
-                        <span>项目概览</span>
-                        {overviewCollapsed ? <RightOutlined style={{ fontSize: 12, color: 'var(--text-soft)' }} /> : <DownOutlined style={{ fontSize: 12, color: 'var(--text-soft)' }} />}
-                      </div>
-                    }
-                    extra={(
-                      <Space>
-                        <Button icon={<PlusOutlined />} onClick={openCreateTaskModal}>
-                          新建需求
-                        </Button>
-                        {selectedProject.status === 'running' ? (
-                          <Button danger icon={<PauseCircleOutlined />} onClick={handlePauseProject}>
-                            暂停
-                          </Button>
-                        ) : (
-                          <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleStartProject}>
-                            开始
-                          </Button>
-                        )}
-                      </Space>
-                    )}
-                  >
-                    {!overviewCollapsed && (
-                      <>
-                        <div className="overview-metrics">
-                          <MetricTile
-                            label="需求总数"
-                            value={completionStats.total}
-                            hint={completionStats.total ? '当前项目需求池' : '还没有需求'}
-                          />
-                          <MetricTile
-                            label="已完成"
-                            value={completionStats.done}
-                            hint={completionStats.total ? '已达到可交付状态的任务' : '等待开始'}
-                            tone="success"
-                          />
-                          <MetricTile
-                            label="阻塞项"
-                            value={completionStats.blocked}
-                            hint={completionStats.blocked ? '建议优先解除依赖' : '暂无阻塞'}
-                            tone={completionStats.blocked ? 'warning' : 'neutral'}
-                          />
-                          <MetricTile
-                            label="当前阶段"
-                            value={currentPhaseMeta.label}
-                            hint={`最近运行 ${formatTime(progress?.lastRunAt)}`}
-                            tone="accent"
-                          />
-                        </div>
-                        <div className="progress-block">
-                          <div className="progress-copy">
-                            <Text strong>整体进度</Text>
-                            <Text type="secondary">当前任务：{activeTaskTitle}</Text>
-                          </div>
-                          <div className="progress-value">{completionStats.percent}%</div>
-                        </div>
-                        <Progress percent={completionStats.percent} strokeColor="#14b8a6" trailColor="rgba(20, 184, 166, 0.14)" style={{ marginTop: 12 }} />
-                        <Descriptions column={1} size="small" className="project-description">
-                          <Descriptions.Item label="工作目录">{selectedProject.workDir}</Descriptions.Item>
-                          <Descriptions.Item label="CLI Agent">{selectedProject.agent}</Descriptions.Item>
-                          <Descriptions.Item label="当前任务">{activeTaskTitle}</Descriptions.Item>
-                          <Descriptions.Item label="当前阶段">{progress?.currentPhase || '未启动'}</Descriptions.Item>
-                          <Descriptions.Item label="最近运行">{formatTime(progress?.lastRunAt)}</Descriptions.Item>
-                        </Descriptions>
-                      </>
-                    )}
-                  </Card>
+                  <Overview
+                    project={selectedProject}
+                    progress={progress}
+                    tasks={tasks}
+                    bugs={bugs}
+                    collapsed={overviewCollapsed}
+                    onToggleCollapse={() => setOverviewCollapsed(!overviewCollapsed)}
+                    onStart={handleStartProject}
+                    onPause={handlePauseProject}
+                    onCreateTask={openCreateTaskModal}
+                    onCreateBug={openCreateBugModal}
+                  />
 
-                  <Card
-                    title="需求看板"
-                    extra={<Text type="secondary">拖拽排序，点击卡片查看详情</Text>}
-                  >
-                    <div className="board-filter-bar">
-                      <Input.Search
-                        placeholder="搜索需求标题或描述"
-                        allowClear
-                        value={boardSearchText}
-                        onChange={(e) => setBoardSearchText(e.target.value)}
-                        style={{ width: 260 }}
-                      />
-                      <Select
-                        value={boardStatusFilter}
-                        onChange={setBoardStatusFilter}
-                        style={{ width: 140 }}
-                        options={[
-                          { value: 'all', label: '全部状态' },
-                          ...BOARD_STATUS_OPTIONS.map((item) => ({ value: item.value, label: item.label })),
-                        ]}
-                      />
-                    </div>
-                    {tasks.length === 0 ? (
-                      <Empty description="还没有需求，点击右上角创建" />
-                    ) : (
-                      <div className="task-board">
-                        {tasks
-                          .filter((task) => {
-                            if (boardStatusFilter !== 'all' && task.boardStatus !== boardStatusFilter) return false;
-                            if (boardSearchText) {
-                              const keyword = boardSearchText.toLowerCase();
-                              return task.title.toLowerCase().includes(keyword) ||
-                                (task.description || '').toLowerCase().includes(keyword);
-                            }
-                            return true;
-                          })
-                          .map((task) => {
-                          const boardMeta = getBoardMeta(task.boardStatus);
-                          const executionMeta = getExecutionMeta(task.executionStatus);
-                          const priorityMeta = getPriorityMeta(task.priority);
-                          return (
-                            <div
-                              key={task.id}
-                              draggable
-                              className={draggingTaskId === task.id ? 'task-card-shell dragging' : 'task-card-shell'}
-                              onDragStart={() => setDraggingTaskId(task.id)}
-                              onDragOver={(event) => event.preventDefault()}
-                              onDrop={() => reorderTasks(draggingTaskId, task.id)}
-                              onDragEnd={() => setDraggingTaskId(null)}
-                            >
-                              <Card
-                                className={activeTask?.id === task.id ? 'task-card is-active' : 'task-card'}
-                                onClick={() => {
-                                  setActiveTask(task);
-                                  setTaskDrawerOpen(true);
-                                }}
-                              >
-                                <div className="task-card-head">
-                                  <Space wrap>
-                                    <HolderOutlined className="drag-handle" />
-                                    <Tag color={priorityMeta.color}>{priorityMeta.label}</Tag>
-                                    <Tag color={boardMeta.color}>{boardMeta.label}</Tag>
-                                    <Tag color={executionMeta.color}>{executionMeta.label}</Tag>
-                                  </Space>
-                                  <Space>
-                                    <Button
-                                      type="text"
-                                      size="small"
-                                      icon={<ThunderboltOutlined />}
-                                      title="立即执行"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        handleMoveTaskToFirst(task.id);
-                                      }}
-                                    />
-                                    <Button
-                                      type="text"
-                                      size="small"
-                                      icon={<EyeOutlined />}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        setActiveTask(task);
-                                        setTaskDrawerOpen(true);
-                                      }}
-                                    />
-                                    <Button
-                                      type="text"
-                                      size="small"
-                                      icon={<EditOutlined />}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        openEditTaskModal(task);
-                                      }}
-                                    />
-                                    <Popconfirm
-                                      title="确认删除需求？"
-                                      onConfirm={(event) => {
-                                        event?.stopPropagation?.();
-                                        handleDeleteTask(task.id);
-                                      }}
-                                    >
-                                      <Button
-                                        danger
-                                        type="text"
-                                        size="small"
-                                        icon={<DeleteOutlined />}
-                                        onClick={(event) => event.stopPropagation()}
-                                      />
-                                    </Popconfirm>
-                                  </Space>
-                                </div>
-                                <Title level={5} className="task-card-title">{task.title}</Title>
-                                <Paragraph ellipsis={{ rows: 3 }} className="task-card-paragraph">
-                                  {task.description || '暂无需求说明'}
-                                </Paragraph>
-                                <div className="task-card-footer">
-                                  <div className="task-card-footer-left">
-                                    <Text type="secondary" className="muted-line">
-                                      更新于 {formatTime(task.updatedAt)}
-                                    </Text>
-                                  </div>
-                                  <Select
-                                    size="small"
-                                    value={task.boardStatus}
-                                    options={BOARD_STATUS_OPTIONS.map((item) => ({ value: item.value, label: item.label }))}
-                                    onChange={(nextValue) => handleTaskStatusChange(task.id, nextValue)}
-                                    onClick={(event) => event.stopPropagation()}
-                                    style={{ width: 148 }}
-                                  />
-                                </div>
-                              </Card>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </Card>
+                  <TaskBoard
+                    tasks={tasks}
+                    activeTaskId={activeTask?.id}
+                    draggingTaskId={draggingTaskId}
+                    boardSearchText={boardSearchText}
+                    boardStatusFilter={boardStatusFilter}
+                    onSearchChange={setBoardSearchText}
+                    onStatusFilterChange={setBoardStatusFilter}
+                    onDragStart={setDraggingTaskId}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={reorderTasks}
+                    onDragEnd={() => setDraggingTaskId(null)}
+                    onTaskClick={(task) => {
+                      setActiveTask(task);
+                      setTaskDrawerOpen(true);
+                    }}
+                    onTaskEdit={openEditTaskModal}
+                    onTaskDelete={handleDeleteTask}
+                    onTaskStatusChange={handleTaskStatusChange}
+                    onMoveToFirst={handleMoveTaskToFirst}
+                  />
                 </Space>
               </div>
 
               <div className="workspace-side column-scroll">
-                <Card
-                  title="实时终端"
-                  className="terminal-card"
-                  extra={(
-                    <Space>
-                      <Text type="secondary">仅保留可读输出</Text>
-                      <Popconfirm
-                        title="确认清除终端日志？"
-                        description="清除后将无法恢复当前终端输出。"
-                        onConfirm={async () => {
-                          await window.vct.clearTerminalHistory(selectedProjectId);
-                          message.success('日志已清除');
-                        }}
-                      >
-                        <Button type="text" icon={<ClearOutlined />}>
-                          清除
-                        </Button>
-                      </Popconfirm>
-                      <Button
-                        type="text"
-                        icon={<ExpandAltOutlined />}
-                        onClick={() => setTerminalFullscreenOpen(true)}
-                      >
-                        全屏
-                      </Button>
-                    </Space>
-                  )}
-                >
-                  <div className="terminal-frame">
-                    <div className="terminal-toolbar">
-                      <div className="terminal-status">
-                        <span className={`terminal-status-dot ${selectedProject?.status === 'running' ? 'is-active' : ''}`} />
-                        <Text className="terminal-toolbar-text">
-                          {selectedProject?.status === 'running' ? '运行中' : '空闲'}
-                        </Text>
-                      </div>
-                      <Text className="terminal-toolbar-text">
-                        {progress?.currentPhase ? `阶段：${currentPhaseMeta.label}` : '等待启动'}
-                      </Text>
-                    </div>
-                    {!terminalFullscreenOpen ? <TerminalPanel projectId={selectedProjectId} /> : null}
-                  </div>
-                  <Text className="terminal-tip">
-                    协议级 JSON 和无效噪声已折叠，保留阶段输出、错误和结果摘要。
-                  </Text>
-                </Card>
+                <TerminalCard
+                  projectId={selectedProjectId}
+                  project={selectedProject}
+                  progress={progress}
+                  onClearHistory={handleClearTerminalHistory}
+                />
               </div>
             </div>
           )}
         </Content>
       </Layout>
 
-      <Modal
-        title={editingProject ? '编辑项目' : '新建项目'}
+      {/* Modals */}
+      <ProjectModal
         open={projectModalOpen}
-        confirmLoading={loading}
+        loading={loading}
+        editing={editingProject}
+        form={projectForm}
+        cliAgents={cliAgents}
+        onChooseDirectory={handleChooseDirectory}
         onCancel={() => {
           setProjectModalOpen(false);
           setEditingProject(null);
         }}
         onOk={handleSaveProject}
-        okText={editingProject ? '保存修改' : '创建项目'}
-      >
-        <Form form={projectForm} layout="vertical" initialValues={{ agent: 'claude-code' }}>
-          <Form.Item name="name" label="项目名称" rules={[{ required: true, message: '请输入项目名称' }]}>
-            <Input placeholder="例如：Electron 自动开发平台" />
-          </Form.Item>
-          <Form.Item name="description" label="项目说明">
-            <TextArea rows={3} placeholder="描述项目目标、技术背景与约束" />
-          </Form.Item>
-          <Form.Item name="workDir" label="工作目录">
-            <Input
-              placeholder="留空则默认创建到当前仓库下的 workspaces 目录"
-              addonAfter={<Button type="link" icon={<FolderOpenOutlined />} onClick={() => handleChooseDirectory('workDir')}>选择</Button>}
-            />
-          </Form.Item>
-          <Form.Item name="agent" label="CLI Agent">
-            <Select options={[{ value: 'claude-code', label: 'claude code' }]} />
-          </Form.Item>
-        </Form>
-      </Modal>
+      />
 
-      <Modal
-        title={editingTask ? '编辑需求' : '新建需求'}
+      <TaskModal
         open={taskModalOpen}
-        confirmLoading={loading}
+        loading={loading}
+        editing={editingTask}
+        form={taskForm}
+        agents={agents}
         onCancel={() => {
           setTaskModalOpen(false);
           setEditingTask(null);
         }}
-        footer={
-          editingTask ? (
-            <Space>
-              <Button onClick={() => { setTaskModalOpen(false); setEditingTask(null); }}>取消</Button>
-              <Button type="primary" loading={loading} onClick={handleSaveTask}>
-                保存修改
-              </Button>
-            </Space>
-          ) : (
-            <Space>
-              <Button onClick={() => { setTaskModalOpen(false); setEditingTask(null); }}>取消</Button>
-              <Button loading={loading} onClick={handleSaveAndRunTask} icon={<ThunderboltOutlined />}>
-                保存并立即执行
-              </Button>
-              <Button type="primary" loading={loading} onClick={handleSaveTask}>
-                保存
-              </Button>
-            </Space>
-          )
-        }
-      >
-        <Form form={taskForm} layout="vertical" initialValues={{ priority: 'medium', boardStatus: 'todo' }}>
-          <Form.Item name="title" label="需求标题" rules={[{ required: true, message: '请输入需求标题' }]}>
-            <Input placeholder="例如：补齐项目详情页和终端联动" />
-          </Form.Item>
-          <Form.Item name="description" label="需求描述">
-            <TextArea rows={4} placeholder="补充业务目标、验收标准和注意事项" />
-          </Form.Item>
-          <Form.Item name="priority" label="优先级">
-            <Select options={PRIORITY_OPTIONS} />
-          </Form.Item>
-          <Form.Item name="boardStatus" label="看板状态">
-            <Select options={BOARD_STATUS_OPTIONS.map((item) => ({ value: item.value, label: item.label }))} />
-          </Form.Item>
-        </Form>
-      </Modal>
+        onOk={handleSaveTask}
+        onSaveAndRun={handleSaveAndRunTask}
+      />
 
-      <Drawer
-        title={activeTask?.title || '任务详情'}
-        width="90%"
+      <AgentModal
+        open={agentModalOpen}
+        loading={loading}
+        editing={editingAgent}
+        form={agentForm}
+        cliAgents={cliAgents}
+        onCancel={() => {
+          setAgentModalOpen(false);
+          setEditingAgent(null);
+        }}
+        onOk={handleSaveAgent}
+      />
+
+      <BugModal
+        open={bugModalOpen}
+        loading={loading}
+        editing={editingBug}
+        form={bugForm}
+        agents={agents}
+        tasks={tasks}
+        onCancel={() => {
+          setBugModalOpen(false);
+          setEditingBug(null);
+        }}
+        onOk={handleSaveBug}
+        onSaveAndFix={handleSaveAndFixBug}
+      />
+
+      {/* Drawers */}
+      <TaskDrawer
         open={taskDrawerOpen}
+        task={activeTask}
+        agents={agents}
         onClose={() => setTaskDrawerOpen(false)}
-        extra={activeTask ? (
-          <Space>
-            <Button icon={<EditOutlined />} onClick={() => openEditTaskModal(activeTask)}>编辑</Button>
-            <Button icon={<SaveOutlined />} onClick={() => handleTaskStatusChange(activeTask.id, 'done')}>标记完成</Button>
-          </Space>
-        ) : null}
-      >
-        {activeTask ? (
-          <Space direction="vertical" size={20} style={{ width: '100%' }}>
-            <Descriptions column={1} size="small" bordered>
-              <Descriptions.Item label="优先级">{activeTask.priority}</Descriptions.Item>
-              <Descriptions.Item label="看板状态">
-                <Tag color={getBoardMeta(activeTask.boardStatus).color}>{getBoardMeta(activeTask.boardStatus).label}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="执行状态">
-                <Tag color={getExecutionMeta(activeTask.executionStatus).color}>{getExecutionMeta(activeTask.executionStatus).label}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="提交记录">{activeTask.commitHash || '暂无'}</Descriptions.Item>
-              <Descriptions.Item label="最近更新时间">{formatTime(activeTask.updatedAt)}</Descriptions.Item>
-            </Descriptions>
+        onEdit={(task) => {
+          setTaskDrawerOpen(false);
+          openEditTaskModal(task);
+        }}
+        onMarkComplete={(taskId) => {
+          handleTaskStatusChange(taskId, 'done');
+          setTaskDrawerOpen(false);
+        }}
+      />
 
-            <TaskDetailSection title="需求描述" content={activeTask.description} />
-            <TaskDetailSection title="需求分析" content={activeTask.analysis} />
-            <TaskDetailSection title="开发计划" content={activeTask.plan} />
-            <TaskDetailSection title="代码审查" content={activeTask.reviewResult} />
-            <TaskDetailSection title="测试结果" content={activeTask.testResult} />
-            <TaskDetailSection title="错误信息" content={activeTask.lastError} />
-
-            <div className="detail-section">
-              <Title level={5}>历史执行记录</Title>
-              {activeTask.history?.length ? (
-                <Timeline
-                  items={activeTask.history.map((entry) => ({
-                    color: entry.type?.includes('failed') ? 'red' : 'teal',
-                    children: (
-                      <div>
-                        <Space className="space-between full-width">
-                          <Text strong>{entry.title || entry.type}</Text>
-                          <Text type="secondary">{formatTime(entry.createdAt)}</Text>
-                        </Space>
-                        <Paragraph className="timeline-content">{entry.content || '无附加信息'}</Paragraph>
-                      </div>
-                    ),
-                  }))}
-                />
-              ) : (
-                <Empty description="暂无历史记录" />
-              )}
-            </div>
-          </Space>
-        ) : (
-          <Empty description="选择一个任务查看详情" />
-        )}
-      </Drawer>
-
-      <Modal
-        open={terminalFullscreenOpen}
-        footer={null}
-        width="92vw"
-        centered
-        destroyOnClose
-        className="terminal-fullscreen-modal"
-        title={selectedProject ? `${selectedProject.name} · 实时终端` : '实时终端'}
-        onCancel={() => setTerminalFullscreenOpen(false)}
-      >
-        <div className="terminal-frame terminal-frame-fullscreen">
-          <div className="terminal-toolbar">
-            <div className="terminal-status">
-              <span className={`terminal-status-dot ${selectedProject?.status === 'running' ? 'is-active' : ''}`} />
-              <Text className="terminal-toolbar-text">
-                {selectedProject?.status === 'running' ? '运行中' : '空闲'}
-              </Text>
-            </div>
-            <Text className="terminal-toolbar-text">
-              {progress?.currentPhase ? `阶段：${currentPhaseMeta.label}` : '等待启动'}
-            </Text>
-          </div>
-          {terminalFullscreenOpen ? <TerminalPanel projectId={selectedProjectId} /> : null}
-        </div>
-        <Text className="terminal-tip">
-          全屏模式适合排查长输出、错误堆栈和多阶段执行日志。
-        </Text>
-      </Modal>
+      <BugDrawer
+        open={bugDrawerOpen}
+        bug={activeBug}
+        agents={agents}
+        tasks={tasks}
+        onClose={() => setBugDrawerOpen(false)}
+        onEdit={(bug) => {
+          setBugDrawerOpen(false);
+          openEditBugModal(bug);
+        }}
+        onFix={(bugId) => {
+          handleFixSingleBug(bugId);
+          setBugDrawerOpen(false);
+        }}
+        onMarkComplete={(bugId) => {
+          handleBugStatusChange(bugId, 'done');
+          setBugDrawerOpen(false);
+        }}
+      />
     </Layout>
   );
 }

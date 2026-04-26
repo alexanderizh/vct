@@ -101,7 +101,7 @@ body {
 .sider-collapse-btn {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: 4px;
   border: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(255, 255, 255, 0.06);
   color: rgba(255, 255, 255, 0.8);
@@ -130,7 +130,7 @@ body {
 .sider-project-icon {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
+  border-radius: 4px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   background: rgba(255, 255, 255, 0.04);
   cursor: pointer;
@@ -178,7 +178,7 @@ body {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 12px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.04);
   color: rgba(255, 255, 255, 0.86);
   font: inherit;
@@ -221,7 +221,7 @@ body {
 
 .project-item {
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: 6px;
   margin-bottom: 6px;
   padding: 0 !important;
   cursor: pointer;
@@ -348,7 +348,7 @@ body {
 
 .environment-note {
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: 6px;
   background: rgba(15, 118, 110, 0.06);
   color: var(--accent-strong);
 }
@@ -370,7 +370,7 @@ body {
   align-items: flex-start;
   gap: 10px;
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: 6px;
   background: rgba(15, 23, 42, 0.03);
 }
 
@@ -394,7 +394,7 @@ body {
   flex-direction: column;
   gap: 6px;
   padding: 14px;
-  border-radius: 14px;
+  border-radius: 6px;
   background: rgba(15, 118, 110, 0.06);
 }
 
@@ -476,7 +476,7 @@ body {
 
 .metric-tile {
   border: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 16px;
+  border-radius: 6px;
   padding: 16px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.78) 100%);
@@ -617,7 +617,7 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: 6px;
   background: rgba(15, 23, 42, 0.04);
 }
 
@@ -647,7 +647,7 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  border-radius: 16px;
+  border-radius: 6px;
   overflow: hidden;
   border: 1px solid rgba(71, 85, 105, 0.28);
   background: #101828;
@@ -764,7 +764,7 @@ body {
 }
 
 .env-status-card {
-  border-radius: 14px;
+  border-radius: 6px;
   padding: 14px;
   border: 1px solid rgba(15, 23, 42, 0.06);
 }
@@ -904,5 +904,194 @@ body {
   .task-card-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+/* CLI Agent 选择器样式 */
+.cli-agent-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+}
+
+.cli-agent-option .agent-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cli-agent-option .agent-version {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+/* 运行中任务卡片动画 */
+.task-card.is-running {
+  border-color: rgba(20, 184, 166, 0.4);
+  animation: pulse-border 2s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: rgba(20, 184, 166, 0.4); }
+  50% { border-color: rgba(20, 184, 166, 0.8); }
+}
+
+/* 错误提示样式 */
+.error-alert-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 1000;
+  max-width: 480px;
+}
+
+/* 重试指示器 */
+.retry-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 4px;
+  margin-top: 8px;
+}
+
+.retry-indicator .retry-count {
+  font-size: 12px;
+  color: #f59e0b;
+}
+
+/* Agent 任务监控页面 */
+.agent-monitor-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.global-stats-bar {
+  padding: 16px 20px;
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.98) 0%, rgba(236, 253, 245, 0.82) 100%);
+  border-radius: 8px;
+  border: 1px solid rgba(20, 184, 166, 0.15);
+  margin-bottom: 16px;
+}
+
+.global-stat {
+  display: inline-flex;
+  align-items: center;
+}
+
+.agent-collapse {
+  background: transparent;
+  border: none;
+}
+
+.agent-collapse .ant-collapse-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px !important;
+  margin-bottom: 12px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.agent-collapse .ant-collapse-header {
+  padding: 16px 20px !important;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.agent-collapse .ant-collapse-content {
+  border-top: 1px solid var(--border-soft);
+}
+
+.agent-collapse .ant-collapse-content-box {
+  padding: 16px 20px;
+}
+
+.agent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.agent-header-info {
+  display: flex;
+  align-items: center;
+}
+
+.agent-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.agent-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(15, 23, 42, 0.02);
+  border-radius: 6px;
+}
+
+.agent-stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-task-section {
+  margin-top: 8px;
+}
+
+.agent-task-item {
+  padding: 12px 16px !important;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.02);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.agent-task-item:hover {
+  background: rgba(15, 118, 110, 0.08);
+  transform: translateX(4px);
+}
+
+.agent-task-content {
+  width: 100%;
+}
+
+.agent-task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.agent-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-task-error {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: 4px;
+  display: flex;
+  align-items: flex-start;
+}
+
+@media (max-width: 768px) {
+  .agent-stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .global-stats-bar .ant-space {
+    flex-wrap: wrap;
   }
 }

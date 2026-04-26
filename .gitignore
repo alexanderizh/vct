@@ -5,3 +5,5 @@ dist/renderer.js.map
 dist/renderer.js.LICENSE.txt
 
 .DS_Store
+.vct
+dist

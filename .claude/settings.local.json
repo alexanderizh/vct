@@ -4,7 +4,9 @@
       "Bash(npm run *)",
       "Bash(npx acorn *)",
       "Bash(node -c main.js)",
-      "Bash(node -c src/main/services/engine.js)"
+      "Bash(node -c src/main/services/engine.js)",
+      "Bash(pkill -f electron)",
+      "Bash(ELECTRON_ENABLE_LOGGING=1 npm start)"
     ]
   }
 }

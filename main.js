@@ -60,6 +60,14 @@ ipcMain.handle('env:checkGit', async () => {
   return require('./src/main/services/env-check').checkGit();
 });
 
+ipcMain.handle('env:checkAllCLIs', async () => {
+  return require('./src/main/services/env-check').checkAllCLIs();
+});
+
+ipcMain.handle('env:getSupportedAgents', async () => {
+  return require('./src/main/services/env-check').getSupportedAgents();
+});
+
 // --- Project Management ---
 ipcMain.handle('project:list', async () => {
   return require('./src/main/services/project').listProjects();
@@ -143,4 +151,79 @@ ipcMain.handle('engine:clearTerminalHistory', async (_, projectId) => {
 
 ipcMain.handle('engine:recoverProject', async (_, projectId) => {
   return require('./src/main/services/engine').recoverProject(projectId);
+});
+
+// --- Agent Management ---
+ipcMain.handle('agent:list', async () => {
+  return require('./src/main/services/agent').listAgents();
+});
+
+ipcMain.handle('agent:get', async (_, agentId) => {
+  return require('./src/main/services/agent').getAgent(agentId);
+});
+
+ipcMain.handle('agent:create', async (_, agent) => {
+  return require('./src/main/services/agent').createAgent(agent);
+});
+
+ipcMain.handle('agent:update', async (_, agentId, updates) => {
+  return require('./src/main/services/agent').updateAgent(agentId, updates);
+});
+
+ipcMain.handle('agent:delete', async (_, agentId) => {
+  return require('./src/main/services/agent').deleteAgent(agentId);
+});
+
+ipcMain.handle('agent:checkAvailable', async (_, agentId) => {
+  return require('./src/main/services/agent').checkAgentAvailable(agentId);
+});
+
+ipcMain.handle('agent:getTasks', async () => {
+  return require('./src/main/services/agent').getAgentTasks();
+});
+
+// --- Bug Management ---
+ipcMain.handle('bug:list', async (_, projectId) => {
+  return require('./src/main/services/bug').listBugs(projectId);
+});
+
+ipcMain.handle('bug:get', async (_, projectId, bugId) => {
+  return require('./src/main/services/bug').getBug(projectId, bugId);
+});
+
+ipcMain.handle('bug:create', async (_, projectId, bug) => {
+  return require('./src/main/services/bug').createBug(projectId, bug);
+});
+
+ipcMain.handle('bug:update', async (_, projectId, bugId, updates) => {
+  return require('./src/main/services/bug').updateBug(projectId, bugId, updates);
+});
+
+ipcMain.handle('bug:delete', async (_, projectId, bugId) => {
+  return require('./src/main/services/bug').deleteBug(projectId, bugId);
+});
+
+ipcMain.handle('bug:reorder', async (_, projectId, bugOrders) => {
+  return require('./src/main/services/bug').reorderBugs(projectId, bugOrders);
+});
+
+ipcMain.handle('bug:moveToFirst', async (_, projectId, bugId) => {
+  return require('./src/main/services/bug').moveBugToFirst(projectId, bugId);
+});
+
+// --- Bug Fix Engine ---
+ipcMain.handle('bug:fixOne', async (_, projectId, bugId) => {
+  return require('./src/main/services/bug-engine').fixSingleBug(projectId, bugId, mainWindow);
+});
+
+ipcMain.handle('bug:fixAll', async (_, projectId) => {
+  return require('./src/main/services/bug-engine').startBugFixLoop(projectId, mainWindow);
+});
+
+ipcMain.handle('bug:pauseFix', async (_, projectId) => {
+  return require('./src/main/services/bug-engine').pauseBugFix(projectId);
+});
+
+ipcMain.handle('bug:fixStatus', async (_, projectId) => {
+  return require('./src/main/services/bug-engine').getBugFixStatus(projectId);
 });

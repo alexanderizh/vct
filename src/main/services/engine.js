@@ -4,6 +4,15 @@ const { spawn, execSync } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const { getProject, updateProject } = require('./project');
 const { listTasks, updateTask, appendTaskHistory } = require('./task');
+const { getAdapter, checkAllCLIs } = require('./cli-adapters');
+const { ErrorHandler, VCTError, ErrorTypes } = require('./errors');
+const { RetryExecutor } = require('./retry');
+const {
+  getAgent,
+  buildAgentCommand,
+  checkAgentAvailable,
+  listAgents,
+} = require('./agent');
 
 // Active engines per project
 const engines = new Map();
@@ -19,6 +28,10 @@ const progressBuffers = new Map();
 const PROGRESS_FLUSH_INTERVAL = 500; // ms
 const progressFlushTimers = new Map();
 
+// Error handler and retry executor
+const errorHandler = new ErrorHandler();
+const retryExecutor = new RetryExecutor();
+
 class OutputBatcher {
   constructor(projectId, mainWindow, flushCallback) {
     this.projectId = projectId;
@@ -28,10 +41,16 @@ class OutputBatcher {
     this.timer = null;
     this.seq = 0;
     this.BATCH_INTERVAL = 16; // ~60fps
+    this.MAX_BUFFER_SIZE = 65536; // 64KB max buffer size
   }
 
   append(data) {
     this.buffer += data;
+    // 如果缓冲区超过最大大小，立即刷新
+    if (this.buffer.length > this.MAX_BUFFER_SIZE) {
+      this.flush();
+      return;
+    }
     if (!this.timer) {
       this.timer = setTimeout(() => this.flush(), this.BATCH_INTERVAL);
     }
@@ -44,14 +63,19 @@ class OutputBatcher {
     }
     if (this.buffer && this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.seq += 1;
-      this.mainWindow.webContents.send('terminal:data', {
-        projectId: this.projectId,
-        data: this.buffer,
-        seq: this.seq,
-        timestamp: Date.now(),
-      });
-      if (this.flushCallback) {
-        this.flushCallback(this.buffer);
+      try {
+        this.mainWindow.webContents.send('terminal:data', {
+          projectId: this.projectId,
+          data: this.buffer,
+          seq: this.seq,
+          timestamp: Date.now(),
+        });
+        if (this.flushCallback) {
+          this.flushCallback(this.buffer);
+        }
+      } catch (e) {
+        // 忽略发送错误（窗口可能已关闭）
+        console.error('OutputBatcher flush error:', e.message);
       }
       this.buffer = '';
     }
@@ -66,8 +90,27 @@ class OutputBatcher {
   }
 }
 
-// Development phases in order
+// 任务类型定义
+const TASK_TYPES = {
+  FULL_DEVELOPMENT: 'full_development',   // 完整开发流程
+  SIMPLE: 'simple',                        // 简单任务，直接执行
+  ANALYSIS_ONLY: 'analysis_only',          // 仅分析
+  FIX_ONLY: 'fix_only',                    // 仅修复
+  CUSTOM: 'custom',                        // 自定义流程
+};
+
+// 各任务类型对应的执行阶段
+const TASK_TYPE_PHASES = {
+  [TASK_TYPES.FULL_DEVELOPMENT]: ['analyze', 'plan', 'develop', 'review', 'test', 'fix', 'commit'],
+  [TASK_TYPES.SIMPLE]: ['execute'],
+  [TASK_TYPES.ANALYSIS_ONLY]: ['analyze'],
+  [TASK_TYPES.FIX_ONLY]: ['analyze', 'fix'],
+  [TASK_TYPES.CUSTOM]: ['analyze', 'plan', 'develop', 'review', 'test', 'fix', 'commit'],
+};
+
+// 开发阶段定义
 const PHASES = [
+  { key: 'classify', name: '任务分类', executionStatus: 'analyzing' },
   { key: 'git_pull', name: '拉取最新代码', executionStatus: 'queued' },
   { key: 'analyze', name: '需求分析', executionStatus: 'analyzing' },
   { key: 'plan', name: '制定计划', executionStatus: 'planning' },
@@ -76,6 +119,7 @@ const PHASES = [
   { key: 'test', name: '功能测试', executionStatus: 'testing' },
   { key: 'fix', name: '修复缺陷', executionStatus: 'fixing' },
   { key: 'commit', name: '提交代码', executionStatus: 'committing' },
+  { key: 'execute', name: '执行任务', executionStatus: 'developing' },
 ];
 
 function getProgressFilePath(projectId) {
@@ -199,7 +243,7 @@ function runNativeGitPreparation(projectId, project, mainWindow) {
 /**
  * Build the Claude Code prompt for each phase
  */
-function buildPhasePrompt(phase, task, project) {
+function buildPhasePrompt(phase, task, project, taskType = TASK_TYPES.FULL_DEVELOPMENT) {
   const baseContext = `你是运行在本地开发机上的 Claude Code CLI 自动开发代理。
 项目名称: ${project.name}
 项目目录: ${project.workDir}
@@ -214,6 +258,31 @@ function buildPhasePrompt(phase, task, project) {
 `;
 
   const prompts = {
+    // 任务分类阶段 - 分析任务类型并决定执行流程
+    classify: `${baseContext}
+请分析当前任务，判断任务类型并决定执行流程。
+
+任务类型说明：
+1. **full_development** - 完整开发流程：需要编写新代码、新增功能、重构等开发工作
+2. **simple** - 简单任务：问答、查询、解释代码、生成文档等，无需修改代码
+3. **analysis_only** - 仅分析：只需要分析问题、给出建议，不需要实际修改
+4. **fix_only** - 仅修复：修复已知 bug 或问题，不需要完整开发流程
+5. **custom** - 自定义：根据任务特点灵活处理
+
+请输出 JSON 格式（必须严格遵循）：
+\`\`\`json
+{
+  "taskType": "full_development|simple|analysis_only|fix_only|custom",
+  "reason": "判断理由",
+  "suggestedPhases": ["analyze", "plan", ...],
+  "requiresCodeChange": true/false,
+  "requiresGitCommit": true/false,
+  "riskLevel": "low|medium|high"
+}
+\`\`\`
+
+只输出 JSON，不要有其他内容。`,
+
     git_pull: `${baseContext}
 请检查当前目录是否为 git 仓库，如果是则执行 git fetch 和 git pull --ff-only 拉取最新代码。
 如果不是 git 仓库，请明确说明并继续后续流程，不要中断整个任务循环。`,
@@ -300,33 +369,102 @@ ${task.testResult || task.reviewResult || '请检查当前实现中的问题并�
 4. 如果已配置远程且推送安全，执行 git push
 
 请返回 commit hash 和提交摘要。`,
+
+    // 简单任务执行阶段 - 直接完成任务
+    execute: `${baseContext}
+请直接完成当前任务。
+
+要求：
+1. 根据任务描述直接执行，无需遵循开发流程
+2. 如果需要修改代码，完成后说明修改内容
+3. 如果只是问答或分析，直接给出结果
+4. 输出清晰的执行结果
+
+完成后说明任务执行情况。`,
   };
 
   return prompts[phase] || baseContext;
 }
 
 /**
- * Run a single Claude Code command in print mode
+ * 解析任务分类结果
+ * @param {string} output - CLI 输出
+ * @returns {Object} 分类结果
  */
-function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
-  return new Promise((resolve, reject) => {
-    const { stream: logStream } = getLogStream(projectId);
+function parseTaskClassification(output) {
+  try {
+    // 尝试从输出中提取 JSON
+    const jsonMatch = output.match(/```json\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[1]);
+    }
+    // 尝试直接解析整个输出
+    const trimmed = output.trim();
+    if (trimmed.startsWith('{')) {
+      return JSON.parse(trimmed);
+    }
+  } catch (e) {
+    console.error('Failed to parse task classification:', e.message);
+  }
 
-    const args = [
-      '-p', prompt,
-      '--permission-mode', 'bypassPermissions',
-      '--max-turns', '30',
-      '--output-format', 'stream-json',
-      '--include-partial-messages',
-      '--verbose',
-      '--add-dir', workDir,
-    ];
+  // 默认返回完整开发流程
+  return {
+    taskType: TASK_TYPES.FULL_DEVELOPMENT,
+    reason: '无法解析分类结果，使用默认完整流程',
+    suggestedPhases: TASK_TYPE_PHASES[TASK_TYPES.FULL_DEVELOPMENT],
+    requiresCodeChange: true,
+    requiresGitCommit: true,
+    riskLevel: 'medium',
+  };
+}
 
-    if (sessionId) {
-      args.push('--resume', sessionId);
+/**
+ * Run a single CLI command using the adapter pattern
+ * @param {string} projectId - Project ID
+ * @param {string} prompt - User prompt
+ * @param {string} workDir - Working directory
+ * @param {Object} mainWindow - Electron main window
+ * @param {string} sessionId - Session ID for resume
+ * @param {string} agentType - CLI agent type (claude-code, opencode)
+ * @returns {Promise} Execution result
+ */
+function runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentType = 'claude-code') {
+  return new Promise(async (resolve, reject) => {
+    // Get the appropriate adapter
+    let adapter;
+    try {
+      adapter = getAdapter(agentType);
+    } catch (e) {
+      return reject(new VCTError(
+        ErrorTypes.CLI_NOT_INSTALLED,
+        `不支持的 CLI 类型: ${agentType}`,
+        { recoverable: false, context: { cliName: agentType } }
+      ));
     }
 
-    const proc = spawn('claude', args, {
+    // Check if CLI is installed
+    try {
+      execSync(`which ${adapter.executable}`, { timeout: 5000 });
+    } catch (e) {
+      return reject(new VCTError(
+        ErrorTypes.CLI_NOT_INSTALLED,
+        `${adapter.displayName} CLI 未安装`,
+        { recoverable: false, context: { cliName: adapter.displayName } }
+      ));
+    }
+
+    const { stream: logStream } = getLogStream(projectId);
+
+    // Build command args using adapter
+    const args = adapter.buildCommandArgs({
+      prompt,
+      workDir,
+      sessionId,
+      maxTurns: 30,
+    });
+
+    // Spawn process
+    const proc = spawn(adapter.executable, args, {
       cwd: workDir,
       env: { ...process.env },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -349,24 +487,23 @@ function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
         const line = buffer.slice(0, newlineIndex).trim();
         buffer = buffer.slice(newlineIndex + 1);
         if (line) {
-          try {
-            const event = JSON.parse(line);
-            const printable = extractPrintableText(event);
-            if (printable) {
-              finalResult += printable;
-              emitTerminalData(mainWindow, projectId, printable);
-            }
-            if (event.type === 'result' && typeof event.result === 'string') {
-              fallbackResult = event.result;
-            }
-            if (event.type === 'assistant' && event.message?.content) {
-              fallbackResult = flattenContent(event.message.content).trim() || fallbackResult;
-            }
-            if (event.type === 'system' && event.session_id) {
-              capturedSessionId = event.session_id;
-            }
-          } catch (error) {
-            emitTerminalData(mainWindow, projectId, line + '\n');
+          const event = adapter.parseOutputLine(line);
+
+          // Extract session ID
+          if (event.type === 'session' && event.sessionId) {
+            capturedSessionId = event.sessionId;
+          }
+
+          // Extract printable text
+          const printable = adapter.extractPrintableText(event);
+          if (printable) {
+            finalResult += printable;
+            emitTerminalData(mainWindow, projectId, printable);
+          }
+
+          // Fallback result for Claude Code format
+          if (event.type === 'result_content' && event.text) {
+            fallbackResult = event.text;
           }
         }
         newlineIndex = buffer.indexOf('\n');
@@ -386,28 +523,52 @@ function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
 
     proc.on('close', (code) => {
       logStream.end();
+
+      // Handle remaining buffer
       if (buffer.trim()) {
-        try {
-          const event = JSON.parse(buffer.trim());
-          const printable = extractPrintableText(event);
-          if (printable) finalResult += printable;
-          if (event.type === 'result' && typeof event.result === 'string') {
-            fallbackResult = event.result;
-          }
-        } catch (error) {
-          finalResult += buffer.trim();
-        }
+        const event = adapter.parseOutputLine(buffer.trim());
+        const printable = adapter.extractPrintableText(event);
+        if (printable) finalResult += printable;
       }
+
+      // Check if process was killed intentionally (engine stopping)
+      const engineState = engines.get(projectId);
+      const wasIntentionalStop = engineState?.stopping;
+
       if (code === 0) {
-        resolve({ success: true, output: finalResult.trim() || fallbackResult.trim() || stdout, fullOutput: stdout, sessionId: capturedSessionId });
+        resolve({
+          success: true,
+          output: finalResult.trim() || fallbackResult.trim() || stdout,
+          fullOutput: stdout,
+          sessionId: capturedSessionId,
+        });
+      } else if (wasIntentionalStop) {
+        // Process was killed intentionally (user clicked pause)
+        // Resolve gracefully instead of rejecting
+        resolve({
+          success: false,
+          stopped: true,
+          output: finalResult.trim() || fallbackResult.trim() || stdout,
+          fullOutput: stdout,
+          sessionId: capturedSessionId,
+        });
       } else {
-        reject(new Error(`Claude Code exited with code ${code}: ${stderr}`));
+        const formattedError = adapter.formatError(stderr);
+        reject(new VCTError(
+          ErrorTypes.CLI_PROCESS_ERROR,
+          `${adapter.displayName} 退出码 ${code}: ${formattedError}`,
+          { context: { exitCode: code, stderr, cliName: adapter.displayName } }
+        ));
       }
     });
 
     proc.on('error', (err) => {
       logStream.end();
-      reject(err);
+      reject(new VCTError(
+        ErrorTypes.CLI_PROCESS_ERROR,
+        `进程启动失败: ${err.message}`,
+        { originalError: err }
+      ));
     });
 
     // Store the process so we can kill it on pause
@@ -415,6 +576,222 @@ function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
       engines.get(projectId).currentProcess = proc;
     }
   });
+}
+
+/**
+ * Execute CLI command with retry support
+ */
+async function executeWithRetry(projectId, prompt, workDir, mainWindow, sessionId, agentType) {
+  return retryExecutor.execute(
+    () => runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentType),
+    (error, attempt) => {
+      // Don't retry for CLI not installed or auth failed
+      if (error.type === ErrorTypes.CLI_NOT_INSTALLED) return false;
+      if (error.type === ErrorTypes.CLI_AUTH_FAILED) return false;
+      return true;
+    },
+    (error, attempt, delay) => {
+      sendTerminalOutput(mainWindow, projectId, `⏳ 第 ${attempt} 次重试，${delay / 1000} 秒后执行...\n`);
+    }
+  );
+}
+
+/**
+ * Run a command using an Agent (custom configured CLI)
+ * @param {string} projectId - Project ID
+ * @param {string} agentId - Agent ID
+ * @param {string} prompt - User prompt
+ * @param {string} workDir - Working directory
+ * @param {Object} mainWindow - Electron main window
+ * @param {string} sessionId - Session ID for resume
+ * @returns {Promise} Execution result
+ */
+function runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessionId) {
+  return new Promise(async (resolve, reject) => {
+    // Get agent configuration and build command
+    let commandConfig;
+    try {
+      commandConfig = buildAgentCommand(agentId, {
+        prompt,
+        workDir,
+        sessionId,
+      });
+    } catch (e) {
+      return reject(new VCTError(
+        ErrorTypes.CLI_NOT_INSTALLED,
+        `Agent 配置错误: ${e.message}`,
+        { recoverable: false, context: { agentId } }
+      ));
+    }
+
+    const { executable, args, env, adapter, agent, hasCustomConfig } = commandConfig;
+
+    // Check if CLI is installed
+    try {
+      execSync(`which ${executable}`, { timeout: 5000 });
+    } catch (e) {
+      return reject(new VCTError(
+        ErrorTypes.CLI_NOT_INSTALLED,
+        `${adapter.displayName} CLI 未安装`,
+        { recoverable: false, context: { cliName: adapter.displayName } }
+      ));
+    }
+
+    const { stream: logStream } = getLogStream(projectId);
+
+    // Log agent info
+    logStream.write(`[Agent: ${agent.name}] Using ${adapter.displayName}\n`);
+    if (hasCustomConfig) {
+      logStream.write(`[Config] 使用自定义 API 配置\n`);
+      if (agent.model) logStream.write(`[Model] ${agent.model}\n`);
+      if (agent.apiBaseUrl) logStream.write(`[API URL] ${agent.apiBaseUrl}\n`);
+    } else {
+      logStream.write(`[Config] 使用 CLI 默认配置\n`);
+    }
+    if (agent.systemPrompt) {
+      logStream.write(`[System Prompt] 已配置 (${agent.systemPrompt.length} 字符)\n`);
+    }
+    logStream.write(`[Command] ${executable} ${args.slice(0, 5).join(' ')}...\n`);
+
+    // Spawn process with agent's environment
+    const proc = spawn(executable, args, {
+      cwd: workDir,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let buffer = '';
+    let finalResult = '';
+    let fallbackResult = '';
+    let capturedSessionId = sessionId || null;
+
+    function handleStdoutChunk(text) {
+      stdout += text;
+      buffer += text;
+      logStream.write(text);
+
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          const event = adapter.parseOutputLine(line);
+
+          // Extract session ID
+          if (event.type === 'session' && event.sessionId) {
+            capturedSessionId = event.sessionId;
+          }
+
+          // Extract printable text
+          const printable = adapter.extractPrintableText(event);
+          if (printable) {
+            finalResult += printable;
+            emitTerminalData(mainWindow, projectId, printable);
+          }
+
+          // Fallback result for Claude Code format
+          if (event.type === 'result_content' && event.text) {
+            fallbackResult = event.text;
+          }
+        }
+        newlineIndex = buffer.indexOf('\n');
+      }
+    }
+
+    proc.stdout.on('data', (data) => {
+      handleStdoutChunk(data.toString());
+    });
+
+    proc.stderr.on('data', (data) => {
+      const text = data.toString();
+      stderr += text;
+      logStream.write(text);
+      emitTerminalData(mainWindow, projectId, text);
+    });
+
+    proc.on('close', (code) => {
+      logStream.end();
+
+      // Handle remaining buffer
+      if (buffer.trim()) {
+        const event = adapter.parseOutputLine(buffer.trim());
+        const printable = adapter.extractPrintableText(event);
+        if (printable) finalResult += printable;
+      }
+
+      // Check if process was killed intentionally (engine stopping)
+      const engineState = engines.get(projectId);
+      const wasIntentionalStop = engineState?.stopping;
+
+      if (code === 0) {
+        resolve({
+          success: true,
+          output: finalResult.trim() || fallbackResult.trim() || stdout,
+          fullOutput: stdout,
+          sessionId: capturedSessionId,
+        });
+      } else if (wasIntentionalStop) {
+        // Process was killed intentionally (user clicked pause)
+        // Resolve gracefully instead of rejecting
+        resolve({
+          success: false,
+          stopped: true,
+          output: finalResult.trim() || fallbackResult.trim() || stdout,
+          fullOutput: stdout,
+          sessionId: capturedSessionId,
+        });
+      } else {
+        const formattedError = adapter.formatError(stderr);
+        reject(new VCTError(
+          ErrorTypes.CLI_PROCESS_ERROR,
+          `${agent.name} (${adapter.displayName}) 退出码 ${code}: ${formattedError}`,
+          { context: { exitCode: code, stderr, cliName: adapter.displayName, agentName: agent.name } }
+        ));
+      }
+    });
+
+    proc.on('error', (err) => {
+      logStream.end();
+      reject(new VCTError(
+        ErrorTypes.CLI_PROCESS_ERROR,
+        `进程启动失败: ${err.message}`,
+        { originalError: err }
+      ));
+    });
+
+    // Store the process so we can kill it on pause
+    if (engines.has(projectId)) {
+      engines.get(projectId).currentProcess = proc;
+    }
+  });
+}
+
+/**
+ * Execute Agent command with retry support
+ */
+async function executeAgentWithRetry(projectId, agentId, prompt, workDir, mainWindow, sessionId) {
+  return retryExecutor.execute(
+    () => runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessionId),
+    (error, attempt) => {
+      // Don't retry for CLI not installed or auth failed
+      if (error.type === ErrorTypes.CLI_NOT_INSTALLED) return false;
+      if (error.type === ErrorTypes.CLI_AUTH_FAILED) return false;
+      return true;
+    },
+    (error, attempt, delay) => {
+      sendTerminalOutput(mainWindow, projectId, `⏳ 第 ${attempt} 次重试，${delay / 1000} 秒后执行...\n`);
+    }
+  );
+}
+
+/**
+ * Run a single Claude Code command in print mode (legacy compatibility)
+ * @deprecated Use runCLICommand instead
+ */
+function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
+  return runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, 'claude-code');
 }
 
 function extractPrintableText(event) {
@@ -487,6 +864,9 @@ async function runEngineLoop(projectId, mainWindow) {
   const engine = engines.get(projectId);
   if (!engine || engine.stopping) return;
 
+  // Get the project's default CLI agent type (fallback)
+  const defaultAgentType = project.agent || 'claude-code';
+
   // Clear terminal for new session
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('terminal:clear', { projectId });
@@ -518,6 +898,29 @@ async function runEngineLoop(projectId, mainWindow) {
       break;
     }
 
+    // Determine which Agent to use for this task
+    let taskAgentId = nextTask.agentId;
+    let taskAgent = null;
+    let useAgentMode = false;
+
+    if (taskAgentId) {
+      // Task has a specific Agent assigned
+      taskAgent = getAgent(taskAgentId);
+      if (taskAgent && taskAgent.enabled) {
+        useAgentMode = true;
+        sendTerminalOutput(mainWindow, projectId, `🤖 任务使用 Agent: ${taskAgent.name}\n`);
+      } else {
+        sendTerminalOutput(mainWindow, projectId, `⚠️ 任务指定的 Agent ${taskAgentId} 不可用，使用项目默认 CLI\n`);
+        taskAgentId = null;
+      }
+    }
+
+    // If no Agent assigned, use project's default CLI type
+    if (!useAgentMode) {
+      const adapter = getAdapter(defaultAgentType);
+      sendTerminalOutput(mainWindow, projectId, `🤖 使用 ${adapter.displayName} 执行任务\n`);
+    }
+
     sendTerminalOutput(mainWindow, projectId, `\n${'='.repeat(60)}\n📋 开始处理任务: ${nextTask.title}\n${'='.repeat(60)}\n\n`);
 
     // Update progress
@@ -527,17 +930,11 @@ async function runEngineLoop(projectId, mainWindow) {
       currentTaskId: nextTask.id,
       currentPhase: currentProgress.currentTaskId === nextTask.id && currentProgress.currentPhase
         ? currentProgress.currentPhase
-        : 'analyze',
+        : 'classify',
       phaseIndex: currentProgress.currentTaskId === nextTask.id && typeof currentProgress.phaseIndex === 'number'
         ? currentProgress.phaseIndex
         : 0,
     });
-
-    // Execute each phase for this task
-    const freshProgress = readProgress(projectId);
-    const phaseStartIndex = resumableTask && freshProgress.currentPhase
-      ? Math.max(PHASES.findIndex((phase) => phase.key === freshProgress.currentPhase), 0)
-      : 0;
 
     if (nextTask.boardStatus === 'todo') {
       updateTask(projectId, nextTask.id, { boardStatus: 'in_progress' });
@@ -551,18 +948,97 @@ async function runEngineLoop(projectId, mainWindow) {
     });
 
     let taskFailed = false;
+    let taskType = TASK_TYPES.FULL_DEVELOPMENT;
+    let executionPhases = TASK_TYPE_PHASES[TASK_TYPES.FULL_DEVELOPMENT];
 
-    for (let i = phaseStartIndex; i < PHASES.length; i++) {
+    // Step 1: 任务分类 - 判断任务类型并决定执行流程
+    // 如果是恢复的任务，跳过分类阶段（已有分类结果）
+    if (!resumableTask || !nextTask.taskType) {
+      sendTerminalOutput(mainWindow, projectId, `\n▶ 阶段 1: 任务分类\n`);
+      updateTask(projectId, nextTask.id, { executionStatus: 'analyzing' });
+
+      const classifyPrompt = buildPhasePrompt('classify', nextTask, project);
+      try {
+        let classifyResult;
+        if (useAgentMode && taskAgentId) {
+          classifyResult = await executeAgentWithRetry(
+            projectId,
+            taskAgentId,
+            classifyPrompt,
+            project.workDir,
+            mainWindow,
+            taskSessionId
+          );
+        } else {
+          classifyResult = await executeWithRetry(
+            projectId,
+            classifyPrompt,
+            project.workDir,
+            mainWindow,
+            taskSessionId,
+            defaultAgentType
+          );
+        }
+
+        if (classifyResult.sessionId) {
+          taskSessionId = classifyResult.sessionId;
+          taskSessions.set(nextTask.id, taskSessionId);
+        }
+
+        // 解析分类结果
+        const classification = parseTaskClassification(classifyResult.output);
+        taskType = classification.taskType || TASK_TYPES.FULL_DEVELOPMENT;
+        executionPhases = classification.suggestedPhases || TASK_TYPE_PHASES[taskType];
+
+        // 保存分类结果到任务
+        updateTask(projectId, nextTask.id, {
+          taskType,
+          taskClassification: JSON.stringify(classification),
+        });
+
+        sendTerminalOutput(mainWindow, projectId, `\n📊 任务分类结果: ${taskType}\n`);
+        sendTerminalOutput(mainWindow, projectId, `📝 理由: ${classification.reason}\n`);
+        sendTerminalOutput(mainWindow, projectId, `🔄 执行阶段: ${executionPhases.join(' → ')}\n`);
+        sendTerminalOutput(mainWindow, projectId, `✅ 分类完成\n\n`);
+
+        addHistory(projectId, nextTask.id, {
+          type: 'task_classified',
+          title: '任务分类完成',
+          content: `类型: ${taskType}, 执行阶段: ${executionPhases.join(',')}`,
+        });
+
+      } catch (e) {
+        sendTerminalOutput(mainWindow, projectId, `⚠️ 任务分类失败，使用默认完整流程: ${e.message}\n`);
+        taskType = TASK_TYPES.FULL_DEVELOPMENT;
+        executionPhases = TASK_TYPE_PHASES[TASK_TYPES.FULL_DEVELOPMENT];
+      }
+    } else {
+      // 恢复任务，使用已有的分类结果
+      taskType = nextTask.taskType || TASK_TYPES.FULL_DEVELOPMENT;
+      try {
+        const savedClassification = nextTask.taskClassification
+          ? JSON.parse(nextTask.taskClassification)
+          : null;
+        executionPhases = savedClassification?.suggestedPhases || TASK_TYPE_PHASES[taskType];
+      } catch (e) {
+        executionPhases = TASK_TYPE_PHASES[taskType];
+      }
+      sendTerminalOutput(mainWindow, projectId, `📊 恢复任务，类型: ${taskType}\n`);
+      sendTerminalOutput(mainWindow, projectId, `🔄 执行阶段: ${executionPhases.join(' → ')}\n\n`);
+    }
+
+    // Step 2: 按分类后的阶段执行任务
+    for (let phaseIdx = 0; phaseIdx < executionPhases.length; phaseIdx++) {
       if (engine.stopping) break;
 
-      const phase = PHASES[i];
-
-      // Skip git_pull inside the task loop since it has already run once before task processing.
-      if (phase.key === 'git_pull') {
+      const phaseKey = executionPhases[phaseIdx];
+      const phase = PHASES.find(p => p.key === phaseKey);
+      if (!phase) {
+        sendTerminalOutput(mainWindow, projectId, `⚠️ 未知的阶段: ${phaseKey}, 跳过\n`);
         continue;
       }
 
-      sendTerminalOutput(mainWindow, projectId, `\n▶ 阶段 ${i + 1}/${PHASES.length}: ${phase.name}\n`);
+      sendTerminalOutput(mainWindow, projectId, `\n▶ 阶段 ${phaseIdx + 1}/${executionPhases.length}: ${phase.name}\n`);
       addHistory(projectId, nextTask.id, {
         type: 'phase_started',
         phase: phase.key,
@@ -589,14 +1065,36 @@ async function runEngineLoop(projectId, mainWindow) {
       writeProgress(projectId, {
         ...readProgress(projectId),
         currentPhase: phase.key,
-        phaseIndex: i,
+        phaseIndex: phaseIdx,
       });
 
       // Build and execute prompt
-      const prompt = buildPhasePrompt(phase.key, nextTask, project);
+      const prompt = buildPhasePrompt(phase.key, nextTask, project, taskType);
 
       try {
-        const result = await runClaudeCommand(projectId, prompt, project.workDir, mainWindow, taskSessionId);
+        // Execute with Agent or default CLI based on task configuration
+        let result;
+        if (useAgentMode && taskAgentId) {
+          // Use Agent for this task
+          result = await executeAgentWithRetry(
+            projectId,
+            taskAgentId,
+            prompt,
+            project.workDir,
+            mainWindow,
+            taskSessionId
+          );
+        } else {
+          // Use project's default CLI type
+          result = await executeWithRetry(
+            projectId,
+            prompt,
+            project.workDir,
+            mainWindow,
+            taskSessionId,
+            defaultAgentType
+          );
+        }
 
         if (result.sessionId && result.sessionId !== taskSessionId) {
           taskSessionId = result.sessionId;
@@ -610,6 +1108,7 @@ async function runEngineLoop(projectId, mainWindow) {
         if (phase.key === 'plan') taskUpdates.plan = result.output;
         if (phase.key === 'review') taskUpdates.reviewResult = result.output;
         if (phase.key === 'test') taskUpdates.testResult = result.output;
+        if (phase.key === 'execute') taskUpdates.executionResult = result.output;
         if (phase.key === 'commit') {
           // Try to extract commit hash
           const hashMatch = result.output.match(/[0-9a-f]{7,40}/);
@@ -633,27 +1132,35 @@ async function runEngineLoop(projectId, mainWindow) {
 
         sendTerminalOutput(mainWindow, projectId, `✅ ${phase.name} 完成\n`);
       } catch (e) {
-        sendTerminalOutput(mainWindow, projectId, `❌ ${phase.name} 失败: ${e.message}\n`);
+        // Use unified error handler
+        const handled = errorHandler.handle(e, { projectId, phase: phase.key, phaseName: phase.name });
+
+        sendTerminalOutput(mainWindow, projectId, `❌ ${phase.name} 失败: ${handled.message}\n`);
         updateTask(projectId, nextTask.id, {
           executionStatus: 'failed',
-          lastError: e.message,
+          lastError: handled.message,
         });
         addHistory(projectId, nextTask.id, {
           type: 'phase_failed',
           phase: phase.key,
           title: `${phase.name}失败`,
-          content: e.message,
+          content: handled.message,
         });
         writeProgress(projectId, {
           ...readProgress(projectId),
           currentTaskId: nextTask.id,
           currentPhase: phase.key,
-          phaseIndex: i,
+          phaseIndex: phaseIdx,
         });
         taskFailed = true;
         engine.stopping = true;
         updateProject(projectId, { status: 'paused' });
         notifyStatusChange(mainWindow, projectId, 'paused');
+
+        // Show suggestion if available
+        if (handled.suggestion) {
+          sendTerminalOutput(mainWindow, projectId, `💡 建议: ${handled.suggestion}\n`);
+        }
         sendTerminalOutput(mainWindow, projectId, '⏸ 引擎已暂停，请修复问题后重新开始，系统会从当前任务继续。\n');
         break;
       }
@@ -781,11 +1288,19 @@ async function startProject(projectId, mainWindow) {
     return { success: false, error: 'Engine already running for this project' };
   }
 
-  // Check Claude Code
+  // Get the project's CLI agent type and check installation
+  const agentType = project.agent || 'claude-code';
   try {
-    execSync('which claude', { timeout: 5000 });
+    const adapter = getAdapter(agentType);
+    const checkResult = await adapter.checkInstallation();
+    if (!checkResult.installed) {
+      return {
+        success: false,
+        error: `${adapter.displayName} CLI 未安装: ${checkResult.error || '请先安装后再试'}`,
+      };
+    }
   } catch (e) {
-    return { success: false, error: 'Claude Code CLI not found. Please install it first.' };
+    return { success: false, error: `不支持的 CLI 类型: ${agentType}` };
   }
 
   // Check for existing progress to resume
@@ -845,15 +1360,35 @@ async function pauseProject(projectId) {
 
   engine.stopping = true;
 
-  // Kill the current Claude Code process
-  if (engine.currentProcess) {
+  // Kill the current CLI process
+  const proc = engine.currentProcess;
+  if (proc) {
     try {
-      engine.currentProcess.kill('SIGTERM');
-      // Force kill after 5 seconds
-      setTimeout(() => {
-        try { engine.currentProcess.kill('SIGKILL'); } catch (e) {}
-      }, 5000);
-    } catch (e) {}
+      // 先尝试优雅终止
+      proc.kill('SIGTERM');
+
+      // 给进程 3 秒时间优雅退出
+      const forceKillTimer = setTimeout(() => {
+        try {
+          // 检查进程是否还在运行
+          if (engine.currentProcess === proc) {
+            proc.kill('SIGKILL');
+            console.log(`[Engine] Force killed process for project ${projectId}`);
+          }
+        } catch (e) {
+          // 进程可能已经退出
+        }
+      }, 3000);
+
+      // 如果进程正常退出，取消强制终止
+      proc.on('exit', () => {
+        clearTimeout(forceKillTimer);
+      });
+    } catch (e) {
+      console.error(`[Engine] Error killing process: ${e.message}`);
+    }
+    // 清除进程引用
+    engine.currentProcess = null;
   }
 
   updateProject(projectId, { status: 'paused' });

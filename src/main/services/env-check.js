@@ -72,9 +72,40 @@ async function checkGit() {
   }
 }
 
+/**
+ * Check all CLI agents installation status
+ * @returns {Promise<Object>} Map of agent type to check result
+ */
+async function checkAllCLIs() {
+  const { checkAllCLIs: adapterCheck } = require('./cli-adapters');
+  return adapterCheck();
+}
+
+/**
+ * Check a specific CLI agent
+ * @param {string} agentType - Agent type (claude-code, opencode)
+ * @returns {Promise<Object>} Check result
+ */
+async function checkCLI(agentType) {
+  const { checkCLI: adapterCheck } = require('./cli-adapters');
+  return adapterCheck(agentType);
+}
+
+/**
+ * Get list of supported CLI agents
+ * @returns {Array<{key: string, name: string, displayName: string}>}
+ */
+function getSupportedAgents() {
+  const { getAgentInfoList } = require('./cli-adapters');
+  return getAgentInfoList();
+}
+
 module.exports = {
   checkClaude,
   checkGit,
+  checkAllCLIs,
+  checkCLI,
+  getSupportedAgents,
   readProjects,
   writeProjects,
   ensureVctDir,

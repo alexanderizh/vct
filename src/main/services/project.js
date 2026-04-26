@@ -23,6 +23,11 @@ function ensureProjectStructure(workDir, projectId) {
     fs.writeFileSync(tasksFile, JSON.stringify([], null, 2), 'utf-8');
   }
 
+  const bugsFile = path.join(vctDir, 'bugs.json');
+  if (!fs.existsSync(bugsFile)) {
+    fs.writeFileSync(bugsFile, JSON.stringify([], null, 2), 'utf-8');
+  }
+
   const progressFile = path.join(vctDir, 'progress.json');
   if (!fs.existsSync(progressFile)) {
     const now = new Date().toISOString();

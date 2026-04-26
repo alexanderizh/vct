@@ -9,6 +9,21 @@ const { listTasks } = require('./task');
 const VCT_DIR = path.join(os.homedir(), '.vct');
 const AGENTS_FILE = path.join(VCT_DIR, 'agents.json');
 
+// 可用的工作流程阶段
+const WORKFLOW_PHASES = [
+  { key: 'analyze', name: '需求分析', description: '分析任务需求和代码结构' },
+  { key: 'plan', name: '制定计划', description: '制定实现计划' },
+  { key: 'develop', name: '开发实现', description: '编写代码实现功能' },
+  { key: 'review', name: '代码审查', description: '审查代码质量' },
+  { key: 'test', name: '功能测试', description: '验证功能正确性' },
+  { key: 'fix', name: '修复缺陷', description: '修复发现的问题' },
+  { key: 'commit', name: '提交代码', description: '提交并推送代码变更' },
+  { key: 'execute', name: '直接执行', description: '直接完成任务，无需分阶段' },
+];
+
+// 默认工作流程
+const DEFAULT_WORKFLOW = ['analyze', 'plan', 'develop', 'review', 'test', 'fix'];
+
 function ensureVctDir() {
   if (!fs.existsSync(VCT_DIR)) {
     fs.mkdirSync(VCT_DIR, { recursive: true });
@@ -34,7 +49,7 @@ function writeAgents(agents) {
  * @property {string} id - Agent ID
  * @property {string} name - Agent 名称
  * @property {string} description - Agent 描述
- * @property {string} cliType - 基硎 CLI 类型 (claude-code, opencode)
+ * @property {string} cliType - 基础 CLI 类型 (claude-code, opencode)
  * @property {string} [systemPrompt] - 系统提示词
  * @property {string} [model] - 自定义模型
  * @property {string} [apiBaseUrl] - 第三方 API 地址
@@ -43,6 +58,9 @@ function writeAgents(agents) {
  * @property {number} [maxTurns] - 最大轮次
  * @property {string} [permissionMode] - 权限模式
  * @property {boolean} [enabled] - 是否启用
+ * @property {boolean} [useCustomWorkflow] - 是否使用自定义工作流程
+ * @property {string[]} [workflow] - 自定义工作流程阶段列表
+ * @property {boolean} [autoCommit] - 是否在代码变更后自动提交
  * @property {string} createdAt - 创建时间
  * @property {string} updatedAt - 更新时间
  */
@@ -63,6 +81,12 @@ function normalizeAgent(agent) {
     // 执行参数
     maxTurns: agent.maxTurns || 30,
     permissionMode: agent.permissionMode || 'bypassPermissions',
+    // 自定义工作流程
+    useCustomWorkflow: agent.useCustomWorkflow === true,
+    workflow: Array.isArray(agent.workflow) && agent.workflow.length > 0
+      ? agent.workflow
+      : DEFAULT_WORKFLOW,
+    autoCommit: agent.autoCommit !== false, // 默认自动提交
     // 状态
     enabled: agent.enabled !== false,
     createdAt: agent.createdAt || now,
@@ -394,6 +418,20 @@ function getAgentTasks() {
   return result;
 }
 
+/**
+ * 获取 Agent 的工作流程
+ * 如果 Agent 使用自定义工作流程，返回自定义的；否则返回默认的
+ * @param {AgentConfig} agent
+ * @returns {string[]} 工作流程阶段列表
+ */
+function getAgentWorkflow(agent) {
+  if (!agent) return DEFAULT_WORKFLOW;
+  if (agent.useCustomWorkflow && Array.isArray(agent.workflow) && agent.workflow.length > 0) {
+    return agent.workflow;
+  }
+  return DEFAULT_WORKFLOW;
+}
+
 module.exports = {
   listAgents,
   getAgent,
@@ -408,4 +446,7 @@ module.exports = {
   checkAgentAvailable,
   normalizeAgent,
   getAgentTasks,
+  getAgentWorkflow,
+  WORKFLOW_PHASES,
+  DEFAULT_WORKFLOW,
 };

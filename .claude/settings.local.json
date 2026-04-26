@@ -6,7 +6,14 @@
       "Bash(node -c main.js)",
       "Bash(node -c src/main/services/engine.js)",
       "Bash(pkill -f electron)",
-      "Bash(ELECTRON_ENABLE_LOGGING=1 npm start)"
+      "Bash(ELECTRON_ENABLE_LOGGING=1 npm start)",
+      "WebSearch",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(node -c /Users/zhangyang/spark_ai_project/vct/src/main/services/agent.js)",
+      "Bash(node -c /Users/zhangyang/spark_ai_project/vct/src/main/services/engine.js)",
+      "Bash(npx eslint *)",
+      "Bash(npm start *)",
+      "Bash(pkill -f \"electron\")"
     ]
   }
 }

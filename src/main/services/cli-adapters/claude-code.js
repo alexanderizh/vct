@@ -67,11 +67,12 @@ class ClaudeCodeAdapter extends BaseCLIAdapter {
   }
 
   buildCommandArgs(options) {
-    const { prompt, workDir, sessionId, maxTurns = 30 } = options;
+    const { prompt, workDir, sessionId, maxTurns = 30, interactive = false } = options;
 
     const args = [
       '-p', prompt,
-      '--permission-mode', 'bypassPermissions',
+      // 只有非交互模式才跳过权限检查
+      ...(interactive ? [] : ['--permission-mode', 'bypassPermissions']),
       '--max-turns', String(maxTurns),
       '--output-format', 'stream-json',
       '--include-partial-messages',
@@ -145,9 +146,20 @@ class ClaudeCodeAdapter extends BaseCLIAdapter {
       return { type: 'error', text: `\n❌ 错误: ${event.error || '未知错误'}\n`, error: event.error };
     }
 
-    // Permission prompts
+    // Permission prompts - 需要用户交互的权限请求
     if (event.type === 'system' && event.subtype === 'permission_prompt') {
-      return { type: 'permission', text: `\n⚠️ 权限请求: ${event.message || ''}\n` };
+      return {
+        type: 'permission_prompt',
+        permissionId: event.permission_id || event.id,
+        message: event.message || '',
+        resource: event.resource || '',
+        action: event.action || '',
+        options: event.options || [
+          { label: '允许', value: 'allow', description: '执行此操作' },
+          { label: '拒绝', value: 'deny', description: '取消此操作' },
+        ],
+        text: `\n⚠️ 权限请求: ${event.message || ''}\n`,
+      };
     }
 
     // Assistant message content (fallback)

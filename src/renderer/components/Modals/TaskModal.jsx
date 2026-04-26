@@ -43,6 +43,7 @@ function TaskModal({
         )
       }
     >
+       <div style={{height: 600, overflowY: 'auto'}}>
       <Form form={form} layout="vertical" initialValues={{ priority: 'medium', boardStatus: 'todo', agentId: '' }}>
         <Form.Item name="title" label="需求标题" rules={[{ required: true, message: '请输入需求标题' }]}>
           <Input placeholder="例如：补齐项目详情页和终端联动" />
@@ -86,6 +87,8 @@ function TaskModal({
           ]} />
         </Form.Item>
       </Form>
+      </div>
+
     </Modal>
   );
 }

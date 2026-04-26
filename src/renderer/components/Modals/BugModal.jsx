@@ -24,6 +24,8 @@ function BugModal({
       confirmLoading={loading}
       onCancel={onCancel}
       width={640}
+      height={500}
+      
       footer={
         editingBug ? (
           <Space>
@@ -45,7 +47,8 @@ function BugModal({
         )
       }
     >
-      <Form
+      <div style={{height: 600, overflowY: 'auto'}}>
+   <Form
         form={form}
         layout="vertical"
         initialValues={{
@@ -121,6 +124,8 @@ function BugModal({
           </Select>
         </Form.Item>
       </Form>
+      </div>
+   
     </Modal>
   );
 }

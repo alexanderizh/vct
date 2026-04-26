@@ -41,6 +41,9 @@ app.on('before-quit', () => {
   try {
     require('./src/main/services/engine').forceFlushAllProgressBuffers();
   } catch (e) {}
+  try {
+    require('./src/main/services/interaction').cleanup();
+  } catch (e) {}
 });
 
 app.on('activate', () => {
@@ -226,4 +229,28 @@ ipcMain.handle('bug:pauseFix', async (_, projectId) => {
 
 ipcMain.handle('bug:fixStatus', async (_, projectId) => {
   return require('./src/main/services/bug-engine').getBugFixStatus(projectId);
+});
+
+// --- Interaction Management ---
+ipcMain.handle('interaction:submit', async (_, projectId, taskId, interactionId, answer) => {
+  return require('./src/main/services/interaction').submitAnswer(
+    projectId,
+    taskId,
+    interactionId,
+    answer,
+    mainWindow
+  );
+});
+
+ipcMain.handle('interaction:cancel', async (_, projectId, taskId, interactionId) => {
+  return require('./src/main/services/interaction').cancelInteraction(
+    projectId,
+    taskId,
+    interactionId,
+    mainWindow
+  );
+});
+
+ipcMain.handle('interaction:getPending', async (_, projectId, taskId) => {
+  return require('./src/main/services/interaction').getPendingInteractions(projectId, taskId);
 });

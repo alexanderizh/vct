@@ -1,8 +1,20 @@
 import React from 'react';
-import { Button, Card, Empty, List, Popconfirm, Space, Tag, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined, RobotOutlined } from '@ant-design/icons';
+import { Button, Card, Empty, List, Popconfirm, Space, Tag, Typography, Tooltip } from 'antd';
+import { DeleteOutlined, EditOutlined, RobotOutlined, CheckCircleOutlined } from '@ant-design/icons';
 
 const { Paragraph, Text } = Typography;
+
+// 阶段名称映射
+const PHASE_NAMES = {
+  analyze: '分析',
+  plan: '计划',
+  develop: '开发',
+  review: '审查',
+  test: '测试',
+  fix: '修复',
+  commit: '提交',
+  execute: '执行',
+};
 
 function AgentList({ agents, onEdit, onDelete }) {
   return (
@@ -47,6 +59,9 @@ function AgentList({ agents, onEdit, onDelete }) {
                     {agent.enabled ? '已启用' : '已禁用'}
                   </Tag>
                   <Tag color="blue">{agent.cliType}</Tag>
+                  {agent.useCustomWorkflow && (
+                    <Tag color="purple">自定义流程</Tag>
+                  )}
                 </Space>
               }
               description={
@@ -57,6 +72,23 @@ function AgentList({ agents, onEdit, onDelete }) {
                     {agent.apiBaseUrl && <Text code>API: {agent.apiBaseUrl}</Text>}
                     <Text type="secondary">最大轮次: {agent.maxTurns}</Text>
                   </Space>
+                  {agent.useCustomWorkflow && agent.workflow && (
+                    <div style={{ marginTop: 4 }}>
+                      <Text type="secondary" style={{ marginRight: 8 }}>工作流程:</Text>
+                      {agent.workflow.map((phase, index) => (
+                        <Tag key={index} style={{ marginRight: 4, marginBottom: 2 }}>
+                          {PHASE_NAMES[phase] || phase}
+                        </Tag>
+                      ))}
+                      {agent.autoCommit && (
+                        <Tooltip title="有代码变更时自动提交">
+                          <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginLeft: 4 }}>
+                            自动提交
+                          </Tag>
+                        </Tooltip>
+                      )}
+                    </div>
+                  )}
                 </Space>
               }
             />

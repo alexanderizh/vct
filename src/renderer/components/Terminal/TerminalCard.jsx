@@ -76,13 +76,16 @@ function TerminalCard({
         title={project ? `${project.name} · 实时终端` : '实时终端'}
         onCancel={() => setFullscreenOpen(false)}
       >
-        <div className="terminal-frame terminal-frame-fullscreen">
+         <div style={{height: 600, overflowY: 'auto'}}>
+   <div className="terminal-frame terminal-frame-fullscreen">
           {toolbarContent}
           <TerminalPanel projectId={projectId} />
         </div>
         <Text className="terminal-tip">
           全屏模式适合排查长输出、错误堆栈和多阶段执行日志。
         </Text>
+      </div>
+     
       </Modal>
     </>
   );

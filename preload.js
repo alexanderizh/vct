@@ -81,4 +81,32 @@ contextBridge.exposeInMainWorld('vct', {
     ipcRenderer.on('bug:status-change', (_, data) => callback(data));
   },
   removeBugStatusListener: () => ipcRenderer.removeAllListeners('bug:status-change'),
+
+  // Interactions
+  submitInteraction: (projectId, taskId, interactionId, answer) =>
+    ipcRenderer.invoke('interaction:submit', projectId, taskId, interactionId, answer),
+  cancelInteraction: (projectId, taskId, interactionId) =>
+    ipcRenderer.invoke('interaction:cancel', projectId, taskId, interactionId),
+  getPendingInteractions: (projectId, taskId) =>
+    ipcRenderer.invoke('interaction:getPending', projectId, taskId),
+
+  // Interaction events
+  onInteractionPending: (callback) => {
+    ipcRenderer.on('interaction:pending', (_, data) => callback(data));
+  },
+  onInteractionAnswered: (callback) => {
+    ipcRenderer.on('interaction:answered', (_, data) => callback(data));
+  },
+  onInteractionTimeout: (callback) => {
+    ipcRenderer.on('interaction:timeout', (_, data) => callback(data));
+  },
+  onInteractionCancelled: (callback) => {
+    ipcRenderer.on('interaction:cancelled', (_, data) => callback(data));
+  },
+  removeInteractionListeners: () => {
+    ipcRenderer.removeAllListeners('interaction:pending');
+    ipcRenderer.removeAllListeners('interaction:answered');
+    ipcRenderer.removeAllListeners('interaction:timeout');
+    ipcRenderer.removeAllListeners('interaction:cancelled');
+  },
 });

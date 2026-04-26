@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { App, Card, ConfigProvider, Empty, Form, Layout, Space } from 'antd';
+import { App, Card, ConfigProvider, Empty, Form, Layout, Space, Tabs } from 'antd';
+import { AppstoreOutlined, BugOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import './styles.css';
 
@@ -67,6 +68,7 @@ function AppView() {
   const [bugSourceFilter, setBugSourceFilter] = useState('all');
   const [isFixingAllBugs, setIsFixingAllBugs] = useState(false);
   const [siderCollapsed, setSiderCollapsed] = useState(false);
+  const [activeBoardTab, setActiveBoardTab] = useState('tasks');
 
   // Forms
   const [projectForm] = Form.useForm();
@@ -189,10 +191,42 @@ function AppView() {
       }
     });
 
+    // 监听交互事件
+    window.vct.onInteractionPending(({ projectId, taskId, interaction }) => {
+      // 如果是当前选中的项目，刷新任务列表
+      if (projectId === selectedProjectId) {
+        loadProjectDetails(projectId);
+        // 如果有待处理交互，显示通知
+        if (interaction) {
+          message.warning(`任务需要确认: ${interaction.question}`);
+        }
+      }
+    });
+
+    window.vct.onInteractionAnswered(({ projectId, taskId }) => {
+      if (projectId === selectedProjectId) {
+        loadProjectDetails(projectId);
+      }
+    });
+
+    window.vct.onInteractionTimeout(({ projectId, taskId, interactionId }) => {
+      if (projectId === selectedProjectId) {
+        loadProjectDetails(projectId);
+        message.warning('交互已超时');
+      }
+    });
+
+    window.vct.onInteractionCancelled(({ projectId, taskId }) => {
+      if (projectId === selectedProjectId) {
+        loadProjectDetails(projectId);
+      }
+    });
+
     return () => {
       window.vct.removeEngineStatusListener();
       window.vct.removeTaskStatusListener();
       window.vct.removeBugStatusListener();
+      window.vct.removeInteractionListeners();
     };
   }, [selectedProjectId, activeTask]);
 
@@ -553,6 +587,8 @@ function AppView() {
       maxTurns: 30,
       permissionMode: 'bypassPermissions',
       enabled: true,
+      useCustomWorkflow: false,
+      autoCommit: true,
     });
     setAgentModalOpen(true);
   }
@@ -570,6 +606,9 @@ function AppView() {
       maxTurns: agent.maxTurns || 30,
       permissionMode: agent.permissionMode || 'bypassPermissions',
       enabled: agent.enabled !== false,
+      useCustomWorkflow: agent.useCustomWorkflow === true,
+      workflow: agent.workflow || ['analyze', 'plan', 'develop', 'review', 'test', 'fix'],
+      autoCommit: agent.autoCommit !== false,
     });
     setAgentModalOpen(true);
   }
@@ -688,49 +727,6 @@ function AppView() {
             <Card>
               <Empty description="先创建一个项目，再开始自动开发流程" />
             </Card>
-          ) : activeView === 'bugs' ? (
-            <div className="workspace-grid">
-              <div className="workspace-main column-scroll">
-                <BugBoard
-                  bugs={bugs}
-                  activeBugId={activeBug?.id}
-                  draggingBugId={draggingBugId}
-                  boardSearchText={boardSearchText}
-                  boardStatusFilter={boardStatusFilter}
-                  severityFilter={bugSeverityFilter}
-                  sourceFilter={bugSourceFilter}
-                  isFixingAll={isFixingAllBugs}
-                  onSearchChange={setBoardSearchText}
-                  onStatusFilterChange={setBoardStatusFilter}
-                  onSeverityFilterChange={setBugSeverityFilter}
-                  onSourceFilterChange={setBugSourceFilter}
-                  onDragStart={setDraggingBugId}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={reorderBugs}
-                  onDragEnd={() => setDraggingBugId(null)}
-                  onBugClick={(bug) => {
-                    setActiveBug(bug);
-                    setBugDrawerOpen(true);
-                  }}
-                  onBugEdit={openEditBugModal}
-                  onBugDelete={handleDeleteBug}
-                  onBugStatusChange={handleBugStatusChange}
-                  onMoveToFirst={handleMoveBugToFirst}
-                  onFixSingle={handleFixSingleBug}
-                  onFixAll={handleFixAllBugs}
-                  onPauseFix={handlePauseBugFix}
-                />
-              </div>
-
-              <div className="workspace-side column-scroll">
-                <TerminalCard
-                  projectId={selectedProjectId}
-                  project={selectedProject}
-                  progress={progress}
-                  onClearHistory={handleClearTerminalHistory}
-                />
-              </div>
-            </div>
           ) : (
             <div className="workspace-grid">
               <div className="workspace-main column-scroll">
@@ -748,26 +744,83 @@ function AppView() {
                     onCreateBug={openCreateBugModal}
                   />
 
-                  <TaskBoard
-                    tasks={tasks}
-                    activeTaskId={activeTask?.id}
-                    draggingTaskId={draggingTaskId}
-                    boardSearchText={boardSearchText}
-                    boardStatusFilter={boardStatusFilter}
-                    onSearchChange={setBoardSearchText}
-                    onStatusFilterChange={setBoardStatusFilter}
-                    onDragStart={setDraggingTaskId}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={reorderTasks}
-                    onDragEnd={() => setDraggingTaskId(null)}
-                    onTaskClick={(task) => {
-                      setActiveTask(task);
-                      setTaskDrawerOpen(true);
-                    }}
-                    onTaskEdit={openEditTaskModal}
-                    onTaskDelete={handleDeleteTask}
-                    onTaskStatusChange={handleTaskStatusChange}
-                    onMoveToFirst={handleMoveTaskToFirst}
+                  <Tabs
+                    activeKey={activeBoardTab}
+                    onChange={setActiveBoardTab}
+                    items={[
+                      {
+                        key: 'tasks',
+                        label: (
+                          <span>
+                            <AppstoreOutlined style={{ marginRight: 6 }} />
+                            需求看板
+                          </span>
+                        ),
+                        children: (
+                          <TaskBoard
+                            tasks={tasks}
+                            activeTaskId={activeTask?.id}
+                            draggingTaskId={draggingTaskId}
+                            boardSearchText={boardSearchText}
+                            boardStatusFilter={boardStatusFilter}
+                            onSearchChange={setBoardSearchText}
+                            onStatusFilterChange={setBoardStatusFilter}
+                            onDragStart={setDraggingTaskId}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={reorderTasks}
+                            onDragEnd={() => setDraggingTaskId(null)}
+                            onTaskClick={(task) => {
+                              setActiveTask(task);
+                              setTaskDrawerOpen(true);
+                            }}
+                            onTaskEdit={openEditTaskModal}
+                            onTaskDelete={handleDeleteTask}
+                            onTaskStatusChange={handleTaskStatusChange}
+                            onMoveToFirst={handleMoveTaskToFirst}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'bugs',
+                        label: (
+                          <span>
+                            <BugOutlined style={{ marginRight: 6 }} />
+                            Bug 看板
+                          </span>
+                        ),
+                        children: (
+                          <BugBoard
+                            bugs={bugs}
+                            activeBugId={activeBug?.id}
+                            draggingBugId={draggingBugId}
+                            boardSearchText={boardSearchText}
+                            boardStatusFilter={boardStatusFilter}
+                            severityFilter={bugSeverityFilter}
+                            sourceFilter={bugSourceFilter}
+                            isFixingAll={isFixingAllBugs}
+                            onSearchChange={setBoardSearchText}
+                            onStatusFilterChange={setBoardStatusFilter}
+                            onSeverityFilterChange={setBugSeverityFilter}
+                            onSourceFilterChange={setBugSourceFilter}
+                            onDragStart={setDraggingBugId}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={reorderBugs}
+                            onDragEnd={() => setDraggingBugId(null)}
+                            onBugClick={(bug) => {
+                              setActiveBug(bug);
+                              setBugDrawerOpen(true);
+                            }}
+                            onBugEdit={openEditBugModal}
+                            onBugDelete={handleDeleteBug}
+                            onBugStatusChange={handleBugStatusChange}
+                            onMoveToFirst={handleMoveBugToFirst}
+                            onFixSingle={handleFixSingleBug}
+                            onFixAll={handleFixAllBugs}
+                            onPauseFix={handlePauseBugFix}
+                          />
+                        ),
+                      },
+                    ]}
                   />
                 </Space>
               </div>
@@ -855,6 +908,24 @@ function AppView() {
         onMarkComplete={(taskId) => {
           handleTaskStatusChange(taskId, 'done');
           setTaskDrawerOpen(false);
+        }}
+        onSubmitInteraction={async (taskId, interactionId, answer) => {
+          try {
+            await window.vct.submitInteraction(selectedProjectId, taskId, interactionId, answer);
+            message.success('已提交回复');
+            loadProjectDetails(selectedProjectId);
+          } catch (e) {
+            message.error(`提交失败: ${e.message}`);
+          }
+        }}
+        onCancelInteraction={async (taskId, interactionId) => {
+          try {
+            await window.vct.cancelInteraction(selectedProjectId, taskId, interactionId);
+            message.info('已取消交互');
+            loadProjectDetails(selectedProjectId);
+          } catch (e) {
+            message.error(`取消失败: ${e.message}`);
+          }
         }}
       />
 

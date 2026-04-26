@@ -12,7 +12,16 @@ const {
   buildAgentCommand,
   checkAgentAvailable,
   listAgents,
+  getAgentWorkflow,
+  WORKFLOW_PHASES,
+  DEFAULT_WORKFLOW,
 } = require('./agent');
+const {
+  createInteraction,
+  submitAnswer,
+  cancelInteraction,
+  INTERACTION_TYPES,
+} = require('./interaction');
 
 // Active engines per project
 const engines = new Map();
@@ -121,6 +130,16 @@ const PHASES = [
   { key: 'commit', name: '提交代码', executionStatus: 'committing' },
   { key: 'execute', name: '执行任务', executionStatus: 'developing' },
 ];
+
+// 有效的工作流程阶段
+const VALID_WORKFLOW_PHASES = ['analyze', 'plan', 'develop', 'review', 'test', 'fix', 'commit', 'execute'];
+
+// 验证并过滤工作流程阶段
+function validateWorkflow(workflow) {
+  if (!Array.isArray(workflow)) return DEFAULT_WORKFLOW;
+  const valid = workflow.filter(phase => VALID_WORKFLOW_PHASES.includes(phase));
+  return valid.length > 0 ? valid : DEFAULT_WORKFLOW;
+}
 
 function getProgressFilePath(projectId) {
   const project = getProject(projectId);
@@ -419,6 +438,74 @@ function parseTaskClassification(output) {
 }
 
 /**
+ * 处理权限请求提示 - 交互式权限确认
+ * @param {Object} event - 权限请求事件
+ * @param {Object} proc - CLI 进程实例
+ * @param {string} projectId - 项目 ID
+ * @param {string} taskId - 任务 ID
+ * @param {Object} mainWindow - Electron 主窗口
+ */
+async function handlePermissionPrompt(event, proc, projectId, taskId, mainWindow) {
+  // 发送提示信息到终端
+  sendTerminalOutput(mainWindow, projectId, `\n⏳ 需要用户确认: ${event.message}\n`);
+
+  try {
+    // 确定交互类型
+    let interactionType = INTERACTION_TYPES.CONFIRM;
+    if (event.options && event.options.length > 2) {
+      interactionType = INTERACTION_TYPES.CHOICE;
+    }
+
+    // 创建交互请求并等待用户响应
+    const answer = await createInteraction({
+      projectId,
+      taskId,
+      interactionType,
+      question: event.message || '是否允许执行此操作？',
+      description: event.resource ? `资源: ${event.resource}\n操作: ${event.action || ''}` : '',
+      options: event.options || [
+        { label: '允许', value: 'allow', description: '执行此操作' },
+        { label: '拒绝', value: 'deny', description: '取消此操作' },
+      ],
+      phase: getCurrentPhase(projectId),
+      permissionId: event.permissionId,
+    }, mainWindow, proc);
+
+    // 将用户回答写入 CLI stdin
+    const response = formatPermissionResponse(event, answer);
+    proc.stdin.write(JSON.stringify(response) + '\n');
+
+    sendTerminalOutput(mainWindow, projectId, `✅ 用户已响应: ${answer}\n`);
+  } catch (e) {
+    // 用户取消或超时，发送拒绝响应
+    try {
+      proc.stdin.write(JSON.stringify({ action: 'deny' }) + '\n');
+    } catch (writeError) {
+      // 进程可能已关闭
+    }
+    sendTerminalOutput(mainWindow, projectId, `❌ 交互已取消: ${e.message}\n`);
+  }
+}
+
+/**
+ * 获取当前执行阶段
+ */
+function getCurrentPhase(projectId) {
+  const progress = readProgress(projectId);
+  return progress?.currentPhase || '';
+}
+
+/**
+ * 格式化权限响应
+ */
+function formatPermissionResponse(event, answer) {
+  if (typeof answer === 'string') {
+    return { action: answer };
+  }
+  return { action: 'allow', value: answer };
+}
+
+/**
  * Run a single CLI command using the adapter pattern
  * @param {string} projectId - Project ID
  * @param {string} prompt - User prompt
@@ -426,9 +513,11 @@ function parseTaskClassification(output) {
  * @param {Object} mainWindow - Electron main window
  * @param {string} sessionId - Session ID for resume
  * @param {string} agentType - CLI agent type (claude-code, opencode)
+ * @param {string} taskId - Task ID for interaction tracking
+ * @param {boolean} interactive - Enable interactive mode
  * @returns {Promise} Execution result
  */
-function runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentType = 'claude-code') {
+function runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentType = 'claude-code', taskId = null, interactive = false) {
   return new Promise(async (resolve, reject) => {
     // Get the appropriate adapter
     let adapter;
@@ -461,6 +550,7 @@ function runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentT
       workDir,
       sessionId,
       maxTurns: 30,
+      interactive,
     });
 
     // Spawn process
@@ -492,6 +582,19 @@ function runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentT
           // Extract session ID
           if (event.type === 'session' && event.sessionId) {
             capturedSessionId = event.sessionId;
+          }
+
+          // Handle permission prompts - 交互式权限请求 (runCLICommand)
+          if (event.type === 'permission_prompt' && interactive && taskId) {
+            handlePermissionPrompt(event, proc, projectId, taskId, mainWindow).catch(err => {
+              console.error('Permission prompt handling failed:', err);
+              // 发送拒绝响应避免 CLI 挂起
+              try {
+                if (proc.stdin && !proc.stdin.destroyed && proc.stdin.writable) {
+                  proc.stdin.write(JSON.stringify({ action: 'deny' }) + '\n');
+                }
+              } catch (e) {}
+            });
           }
 
           // Extract printable text
@@ -581,9 +684,9 @@ function runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentT
 /**
  * Execute CLI command with retry support
  */
-async function executeWithRetry(projectId, prompt, workDir, mainWindow, sessionId, agentType) {
+async function executeWithRetry(projectId, prompt, workDir, mainWindow, sessionId, agentType, taskId = null, interactive = false) {
   return retryExecutor.execute(
-    () => runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentType),
+    () => runCLICommand(projectId, prompt, workDir, mainWindow, sessionId, agentType, taskId, interactive),
     (error, attempt) => {
       // Don't retry for CLI not installed or auth failed
       if (error.type === ErrorTypes.CLI_NOT_INSTALLED) return false;
@@ -604,9 +707,11 @@ async function executeWithRetry(projectId, prompt, workDir, mainWindow, sessionI
  * @param {string} workDir - Working directory
  * @param {Object} mainWindow - Electron main window
  * @param {string} sessionId - Session ID for resume
+ * @param {string} taskId - Task ID for interaction tracking
+ * @param {boolean} interactive - Enable interactive mode
  * @returns {Promise} Execution result
  */
-function runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessionId) {
+function runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessionId, taskId = null, interactive = false) {
   return new Promise(async (resolve, reject) => {
     // Get agent configuration and build command
     let commandConfig;
@@ -682,6 +787,19 @@ function runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessio
           // Extract session ID
           if (event.type === 'session' && event.sessionId) {
             capturedSessionId = event.sessionId;
+          }
+
+          // Handle permission prompts - 交互式权限请求 (runCLICommand)
+          if (event.type === 'permission_prompt' && interactive && taskId) {
+            handlePermissionPrompt(event, proc, projectId, taskId, mainWindow).catch(err => {
+              console.error('Permission prompt handling failed:', err);
+              // 发送拒绝响应避免 CLI 挂起
+              try {
+                if (proc.stdin && !proc.stdin.destroyed && proc.stdin.writable) {
+                  proc.stdin.write(JSON.stringify({ action: 'deny' }) + '\n');
+                }
+              } catch (e) {}
+            });
           }
 
           // Extract printable text
@@ -771,9 +889,9 @@ function runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessio
 /**
  * Execute Agent command with retry support
  */
-async function executeAgentWithRetry(projectId, agentId, prompt, workDir, mainWindow, sessionId) {
+async function executeAgentWithRetry(projectId, agentId, prompt, workDir, mainWindow, sessionId, taskId = null, interactive = false) {
   return retryExecutor.execute(
-    () => runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessionId),
+    () => runAgentCommand(projectId, agentId, prompt, workDir, mainWindow, sessionId, taskId, interactive),
     (error, attempt) => {
       // Don't retry for CLI not installed or auth failed
       if (error.type === ErrorTypes.CLI_NOT_INSTALLED) return false;
@@ -950,81 +1068,99 @@ async function runEngineLoop(projectId, mainWindow) {
     let taskFailed = false;
     let taskType = TASK_TYPES.FULL_DEVELOPMENT;
     let executionPhases = TASK_TYPE_PHASES[TASK_TYPES.FULL_DEVELOPMENT];
+    let hasCodeChanges = false; // 标记是否有代码变更
 
-    // Step 1: 任务分类 - 判断任务类型并决定执行流程
-    // 如果是恢复的任务，跳过分类阶段（已有分类结果）
-    if (!resumableTask || !nextTask.taskType) {
-      sendTerminalOutput(mainWindow, projectId, `\n▶ 阶段 1: 任务分类\n`);
-      updateTask(projectId, nextTask.id, { executionStatus: 'analyzing' });
+    // 判断是否使用自定义 Agent 的工作流程
+    const useCustomWorkflow = useAgentMode && taskAgent && taskAgent.useCustomWorkflow;
 
-      const classifyPrompt = buildPhasePrompt('classify', nextTask, project);
-      try {
-        let classifyResult;
-        if (useAgentMode && taskAgentId) {
-          classifyResult = await executeAgentWithRetry(
-            projectId,
-            taskAgentId,
-            classifyPrompt,
-            project.workDir,
-            mainWindow,
-            taskSessionId
-          );
-        } else {
-          classifyResult = await executeWithRetry(
-            projectId,
-            classifyPrompt,
-            project.workDir,
-            mainWindow,
-            taskSessionId,
-            defaultAgentType
-          );
-        }
-
-        if (classifyResult.sessionId) {
-          taskSessionId = classifyResult.sessionId;
-          taskSessions.set(nextTask.id, taskSessionId);
-        }
-
-        // 解析分类结果
-        const classification = parseTaskClassification(classifyResult.output);
-        taskType = classification.taskType || TASK_TYPES.FULL_DEVELOPMENT;
-        executionPhases = classification.suggestedPhases || TASK_TYPE_PHASES[taskType];
-
-        // 保存分类结果到任务
-        updateTask(projectId, nextTask.id, {
-          taskType,
-          taskClassification: JSON.stringify(classification),
-        });
-
-        sendTerminalOutput(mainWindow, projectId, `\n📊 任务分类结果: ${taskType}\n`);
-        sendTerminalOutput(mainWindow, projectId, `📝 理由: ${classification.reason}\n`);
-        sendTerminalOutput(mainWindow, projectId, `🔄 执行阶段: ${executionPhases.join(' → ')}\n`);
-        sendTerminalOutput(mainWindow, projectId, `✅ 分类完成\n\n`);
-
-        addHistory(projectId, nextTask.id, {
-          type: 'task_classified',
-          title: '任务分类完成',
-          content: `类型: ${taskType}, 执行阶段: ${executionPhases.join(',')}`,
-        });
-
-      } catch (e) {
-        sendTerminalOutput(mainWindow, projectId, `⚠️ 任务分类失败，使用默认完整流程: ${e.message}\n`);
-        taskType = TASK_TYPES.FULL_DEVELOPMENT;
-        executionPhases = TASK_TYPE_PHASES[TASK_TYPES.FULL_DEVELOPMENT];
+    if (useCustomWorkflow) {
+      // 自定义 Agent 使用自己的工作流程，跳过任务分类
+      executionPhases = validateWorkflow(getAgentWorkflow(taskAgent));
+      taskType = TASK_TYPES.CUSTOM;
+      sendTerminalOutput(mainWindow, projectId, `📋 Agent 使用自定义工作流程: ${executionPhases.join(' → ')}\n`);
+      if (taskAgent.autoCommit) {
+        sendTerminalOutput(mainWindow, projectId, `📝 配置为自动提交代码变更\n`);
       }
     } else {
-      // 恢复任务，使用已有的分类结果
-      taskType = nextTask.taskType || TASK_TYPES.FULL_DEVELOPMENT;
-      try {
-        const savedClassification = nextTask.taskClassification
-          ? JSON.parse(nextTask.taskClassification)
-          : null;
-        executionPhases = savedClassification?.suggestedPhases || TASK_TYPE_PHASES[taskType];
-      } catch (e) {
-        executionPhases = TASK_TYPE_PHASES[taskType];
+      // Step 1: 任务分类 - 判断任务类型并决定执行流程
+      // 如果是恢复的任务，跳过分类阶段（已有分类结果）
+      if (!resumableTask || !nextTask.taskType) {
+        sendTerminalOutput(mainWindow, projectId, `\n▶ 阶段 1: 任务分类\n`);
+        updateTask(projectId, nextTask.id, { executionStatus: 'analyzing' });
+
+        const classifyPrompt = buildPhasePrompt('classify', nextTask, project);
+        try {
+          let classifyResult;
+          if (useAgentMode && taskAgentId) {
+            classifyResult = await executeAgentWithRetry(
+              projectId,
+              taskAgentId,
+              classifyPrompt,
+              project.workDir,
+              mainWindow,
+              taskSessionId,
+              nextTask.id,
+              false // 分类阶段不需要交互
+            );
+          } else {
+            classifyResult = await executeWithRetry(
+              projectId,
+              classifyPrompt,
+              project.workDir,
+              mainWindow,
+              taskSessionId,
+              defaultAgentType,
+              nextTask.id,
+              false // 分类阶段不需要交互
+            );
+          }
+
+          if (classifyResult.sessionId) {
+            taskSessionId = classifyResult.sessionId;
+            taskSessions.set(nextTask.id, taskSessionId);
+          }
+
+          // 解析分类结果
+          const classification = parseTaskClassification(classifyResult.output);
+          taskType = classification.taskType || TASK_TYPES.FULL_DEVELOPMENT;
+          executionPhases = classification.suggestedPhases || TASK_TYPE_PHASES[taskType];
+
+          // 保存分类结果到任务
+          updateTask(projectId, nextTask.id, {
+            taskType,
+            taskClassification: JSON.stringify(classification),
+          });
+
+          sendTerminalOutput(mainWindow, projectId, `\n📊 任务分类结果: ${taskType}\n`);
+          sendTerminalOutput(mainWindow, projectId, `📝 理由: ${classification.reason}\n`);
+          sendTerminalOutput(mainWindow, projectId, `🔄 执行阶段: ${executionPhases.join(' → ')}\n`);
+          sendTerminalOutput(mainWindow, projectId, `✅ 分类完成\n\n`);
+
+          addHistory(projectId, nextTask.id, {
+            type: 'task_classified',
+            title: '任务分类完成',
+            content: `类型: ${taskType}, 执行阶段: ${executionPhases.join(',')}`,
+          });
+
+        } catch (e) {
+          sendTerminalOutput(mainWindow, projectId, `⚠️ 任务分类失败，使用默认完整流程: ${e.message}\n`);
+          taskType = TASK_TYPES.FULL_DEVELOPMENT;
+          executionPhases = TASK_TYPE_PHASES[TASK_TYPES.FULL_DEVELOPMENT];
+        }
+      } else {
+        // 恢复任务，使用已有的分类结果
+        taskType = nextTask.taskType || TASK_TYPES.FULL_DEVELOPMENT;
+        try {
+          const savedClassification = nextTask.taskClassification
+            ? JSON.parse(nextTask.taskClassification)
+            : null;
+          executionPhases = savedClassification?.suggestedPhases || TASK_TYPE_PHASES[taskType];
+        } catch (e) {
+          executionPhases = TASK_TYPE_PHASES[taskType];
+        }
+        sendTerminalOutput(mainWindow, projectId, `📊 恢复任务，类型: ${taskType}\n`);
+        sendTerminalOutput(mainWindow, projectId, `🔄 执行阶段: ${executionPhases.join(' → ')}\n\n`);
       }
-      sendTerminalOutput(mainWindow, projectId, `📊 恢复任务，类型: ${taskType}\n`);
-      sendTerminalOutput(mainWindow, projectId, `🔄 执行阶段: ${executionPhases.join(' → ')}\n\n`);
     }
 
     // Step 2: 按分类后的阶段执行任务
@@ -1071,6 +1207,10 @@ async function runEngineLoop(projectId, mainWindow) {
       // Build and execute prompt
       const prompt = buildPhasePrompt(phase.key, nextTask, project, taskType);
 
+      // 判断是否启用交互模式（开发、修复、提交阶段需要交互）
+      const interactivePhases = ['develop', 'fix', 'commit'];
+      const enableInteractive = interactivePhases.includes(phase.key);
+
       try {
         // Execute with Agent or default CLI based on task configuration
         let result;
@@ -1082,7 +1222,9 @@ async function runEngineLoop(projectId, mainWindow) {
             prompt,
             project.workDir,
             mainWindow,
-            taskSessionId
+            taskSessionId,
+            nextTask.id,
+            enableInteractive
           );
         } else {
           // Use project's default CLI type
@@ -1092,7 +1234,9 @@ async function runEngineLoop(projectId, mainWindow) {
             project.workDir,
             mainWindow,
             taskSessionId,
-            defaultAgentType
+            defaultAgentType,
+            nextTask.id,
+            enableInteractive
           );
         }
 
@@ -1113,6 +1257,20 @@ async function runEngineLoop(projectId, mainWindow) {
           // Try to extract commit hash
           const hashMatch = result.output.match(/[0-9a-f]{7,40}/);
           if (hashMatch) taskUpdates.commitHash = hashMatch[0];
+        }
+
+        // 检测代码变更：develop、fix 和 execute 阶段可能产生代码变更
+        if (phase.key === 'develop' || phase.key === 'fix' || phase.key === 'execute') {
+          // 检查 git 状态判断是否有代码变更
+          try {
+            const gitStatus = runLocalCommand('git status --porcelain', project.workDir);
+            if (gitStatus.trim()) {
+              hasCodeChanges = true;
+              sendTerminalOutput(mainWindow, projectId, `📝 检测到代码变更\n`);
+            }
+          } catch (e) {
+            // 忽略 git 错误
+          }
         }
 
         if (Object.keys(taskUpdates).length > 0) {
@@ -1168,6 +1326,58 @@ async function runEngineLoop(projectId, mainWindow) {
 
     // Mark task as completed
     if (!engine.stopping && !taskFailed) {
+      // 自定义 Agent 且配置了自动提交，如果有代码变更则执行提交
+      if (useCustomWorkflow && taskAgent && taskAgent.autoCommit && hasCodeChanges) {
+        // 检查 workflow 是否已包含 commit 阶段
+        const hasCommitPhase = executionPhases.includes('commit');
+        if (!hasCommitPhase) {
+          sendTerminalOutput(mainWindow, projectId, `\n▶ 自动执行代码提交\n`);
+          updateTask(projectId, nextTask.id, { executionStatus: 'committing' });
+
+          const commitPrompt = buildPhasePrompt('commit', nextTask, project, taskType);
+          try {
+            let commitResult;
+            if (useAgentMode && taskAgentId) {
+              commitResult = await executeAgentWithRetry(
+                projectId,
+                taskAgentId,
+                commitPrompt,
+                project.workDir,
+                mainWindow,
+                taskSessionId,
+                nextTask.id,
+                true
+              );
+            } else {
+              commitResult = await executeWithRetry(
+                projectId,
+                commitPrompt,
+                project.workDir,
+                mainWindow,
+                taskSessionId,
+                defaultAgentType,
+                nextTask.id,
+                true
+              );
+            }
+
+            // 提取 commit hash
+            const hashMatch = commitResult.output.match(/[0-9a-f]{7,40}/);
+            if (hashMatch) {
+              updateTask(projectId, nextTask.id, { commitHash: hashMatch[0] });
+              sendTerminalOutput(mainWindow, projectId, `✅ 代码已提交: ${hashMatch[0]}\n`);
+            }
+            addHistory(projectId, nextTask.id, {
+              type: 'auto_commit',
+              title: '自动提交完成',
+              content: commitResult.output.slice(0, 1000),
+            });
+          } catch (e) {
+            sendTerminalOutput(mainWindow, projectId, `⚠️ 自动提交失败: ${e.message}\n`);
+          }
+        }
+      }
+
       const refreshedTask = listTasks(projectId).find((task) => task.id === nextTask.id);
       if (refreshedTask && refreshedTask.executionStatus !== 'failed') {
         updateTask(projectId, nextTask.id, {

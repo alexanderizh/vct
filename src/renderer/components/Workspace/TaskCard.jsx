@@ -25,6 +25,9 @@ function TaskCard({
   onStatusChange,
   onMoveToFirst,
 }) {
+  // 防止 task 为 null 时崩溃
+  if (!task) return null;
+
   const boardMeta = getBoardMeta(task.boardStatus);
   const executionMeta = getExecutionMeta(task.executionStatus);
   const priorityMeta = getPriorityMeta(task.priority);

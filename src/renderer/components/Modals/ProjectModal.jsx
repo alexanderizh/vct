@@ -24,6 +24,7 @@ function ProjectModal({
       onOk={onOk}
       okText={editingProject ? '保存修改' : '创建项目'}
     >
+       <div style={{height: 600, overflowY: 'auto'}}>
       <Form form={form} layout="vertical" initialValues={{ agent: 'claude-code' }}>
         <Form.Item name="name" label="项目名称" rules={[{ required: true, message: '请输入项目名称' }]}>
           <Input placeholder="例如：Electron 自动开发平台" />
@@ -60,6 +61,8 @@ function ProjectModal({
           </Select>
         </Form.Item>
       </Form>
+      </div>
+
     </Modal>
   );
 }

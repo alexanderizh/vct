@@ -29,6 +29,9 @@ function BugCard({
   onMoveToFirst,
   onFix,
 }) {
+  // 防止 bug 为 null 时崩溃
+  if (!bug) return null;
+
   const boardMeta = getBoardMeta(bug.boardStatus);
   const severityMeta = getBugSeverityMeta(bug.severity);
   const sourceMeta = getBugSourceMeta(bug.source);

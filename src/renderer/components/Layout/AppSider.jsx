@@ -2,7 +2,6 @@ import React from 'react';
 import { Button, Dropdown, Empty, List, Space, Tag, Typography, Layout } from 'antd';
 import {
   AppstoreOutlined,
-  BugOutlined,
   DeleteOutlined,
   EditOutlined,
   LeftOutlined,
@@ -85,13 +84,6 @@ function AppSider({
           icon={<AppstoreOutlined />}
           label="项目工作台"
           onClick={() => onChangeView('workspace')}
-          collapsed={collapsed}
-        />
-        <NavButton
-          active={activeView === 'bugs'}
-          icon={<BugOutlined />}
-          label="Bug 看板"
-          onClick={() => onChangeView('bugs')}
           collapsed={collapsed}
         />
         <NavButton

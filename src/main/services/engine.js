@@ -11,6 +11,61 @@ const engines = new Map();
 // Per-task session tracking: taskId -> sessionId
 const taskSessions = new Map();
 
+// Output batcher for 60fps rendering - per project
+const outputBatchers = new Map();
+
+// Progress memory buffer - avoid frequent file writes
+const progressBuffers = new Map();
+const PROGRESS_FLUSH_INTERVAL = 500; // ms
+const progressFlushTimers = new Map();
+
+class OutputBatcher {
+  constructor(projectId, mainWindow, flushCallback) {
+    this.projectId = projectId;
+    this.mainWindow = mainWindow;
+    this.flushCallback = flushCallback;
+    this.buffer = '';
+    this.timer = null;
+    this.seq = 0;
+    this.BATCH_INTERVAL = 16; // ~60fps
+  }
+
+  append(data) {
+    this.buffer += data;
+    if (!this.timer) {
+      this.timer = setTimeout(() => this.flush(), this.BATCH_INTERVAL);
+    }
+  }
+
+  flush() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (this.buffer && this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.seq += 1;
+      this.mainWindow.webContents.send('terminal:data', {
+        projectId: this.projectId,
+        data: this.buffer,
+        seq: this.seq,
+        timestamp: Date.now(),
+      });
+      if (this.flushCallback) {
+        this.flushCallback(this.buffer);
+      }
+      this.buffer = '';
+    }
+  }
+
+  destroy() {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.flush();
+  }
+}
+
 // Development phases in order
 const PHASES = [
   { key: 'git_pull', name: '拉取最新代码', executionStatus: 'queued' },
@@ -69,13 +124,29 @@ function getLogStream(projectId) {
 }
 
 function emitTerminalData(mainWindow, projectId, data) {
+  // Use batcher for efficient 60fps rendering
+  let batcher = outputBatchers.get(projectId);
+  if (!batcher) {
+    batcher = new OutputBatcher(projectId, mainWindow, (chunk) => {
+      appendProgressBuffer(projectId, chunk);
+    });
+    outputBatchers.set(projectId, batcher);
+  }
+  batcher.append(data);
+}
+
+function emitTerminalDataImmediate(mainWindow, projectId, data) {
+  // For critical messages that need immediate display (like phase headers)
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('terminal:data', {
       projectId,
       data,
+      seq: 0,
       timestamp: Date.now(),
+      immediate: true,
     });
   }
+  appendProgressBuffer(projectId, data);
 }
 
 function addHistory(projectId, taskId, entry) {
@@ -272,7 +343,6 @@ function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
       stdout += text;
       buffer += text;
       logStream.write(text);
-      appendProgressOutput(projectId, text);
 
       let newlineIndex = buffer.indexOf('\n');
       while (newlineIndex >= 0) {
@@ -311,7 +381,6 @@ function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
       const text = data.toString();
       stderr += text;
       logStream.write(text);
-      appendProgressOutput(projectId, text);
       emitTerminalData(mainWindow, projectId, text);
     });
 
@@ -350,15 +419,48 @@ function runClaudeCommand(projectId, prompt, workDir, mainWindow, sessionId) {
 
 function extractPrintableText(event) {
   if (!event || typeof event !== 'object') return '';
-  if (event.type === 'stream_event' && event.event?.type === 'content_block_delta' && event.event?.delta?.type === 'text_delta') {
-    return event.event.delta.text || '';
+
+  // Stream text delta - main output path
+  if (event.type === 'stream_event' && event.event?.type === 'content_block_delta') {
+    const delta = event.event.delta;
+    if (delta?.type === 'text_delta') {
+      return delta.text || '';
+    }
+    // Tool use input delta - show tool name and parameters
+    if (delta?.type === 'input_json_delta' && delta.partial_json) {
+      return ''; // Skip partial JSON, too noisy
+    }
   }
+
+  // Tool use start - show which tool is being used
+  if (event.type === 'stream_event' && event.event?.type === 'content_block_start') {
+    const block = event.event.content_block;
+    if (block?.type === 'tool_use') {
+      return `\n🔧 使用工具: ${block.name}\n`;
+    }
+  }
+
+  // System status messages
   if (event.type === 'system' && event.subtype === 'status' && event.status) {
     return `\n[Claude 状态] ${event.status}\n`;
   }
   if (event.type === 'system' && event.subtype === 'api_retry') {
     return `[Claude 重试] 第 ${event.attempt}/${event.max_retries} 次，${event.retry_delay_ms}ms 后重试\n`;
   }
+
+  // Result messages
+  if (event.type === 'result' && event.subtype === 'success') {
+    return '\n✅ 任务执行完成\n';
+  }
+  if (event.type === 'result' && event.subtype === 'error') {
+    return `\n❌ 错误: ${event.error || '未知错误'}\n`;
+  }
+
+  // Permission prompts (shouldn't happen with bypassPermissions, but just in case)
+  if (event.type === 'system' && event.subtype === 'permission_prompt') {
+    return `\n⚠️ 权限请求: ${event.message || ''}\n`;
+  }
+
   return '';
 }
 
@@ -600,13 +702,9 @@ async function runEngineLoop(projectId, mainWindow) {
 }
 
 function sendTerminalOutput(mainWindow, projectId, text) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('terminal:data', {
-      projectId,
-      data: text,
-      timestamp: Date.now(),
-    });
-  }
+  // For engine-generated formatted output (phase headers, etc.)
+  // Use immediate mode for important markers
+  emitTerminalDataImmediate(mainWindow, projectId, text);
 }
 
 function notifyStatusChange(mainWindow, projectId, status) {
@@ -619,14 +717,56 @@ function notifyStatusChange(mainWindow, projectId, status) {
   }
 }
 
-function appendProgressOutput(projectId, text) {
+function appendProgressBuffer(projectId, text) {
+  // Append to memory buffer first, flush periodically
+  let buffer = progressBuffers.get(projectId);
+  if (!buffer) {
+    buffer = { content: '', lastFlush: Date.now() };
+    progressBuffers.set(projectId, buffer);
+  }
+  buffer.content += text;
+
+  // Schedule flush if not already scheduled
+  if (!progressFlushTimers.has(projectId)) {
+    const timer = setTimeout(() => flushProgressBuffer(projectId), PROGRESS_FLUSH_INTERVAL);
+    progressFlushTimers.set(projectId, timer);
+  }
+}
+
+function flushProgressBuffer(projectId) {
+  const buffer = progressBuffers.get(projectId);
+  if (!buffer || !buffer.content) {
+    progressFlushTimers.delete(projectId);
+    return;
+  }
+
   const progress = readProgress(projectId);
-  if (!progress) return;
-  const mergedOutput = `${progress.lastOutput || ''}${text}`;
-  writeProgress(projectId, {
-    ...progress,
-    lastOutput: mergedOutput.slice(-8000),
-  });
+  if (progress) {
+    const mergedOutput = `${progress.lastOutput || ''}${buffer.content}`;
+    writeProgress(projectId, {
+      ...progress,
+      lastOutput: mergedOutput.slice(-16000), // Increased buffer size for better history
+    });
+    buffer.content = '';
+    buffer.lastFlush = Date.now();
+  }
+
+  progressFlushTimers.delete(projectId);
+}
+
+function forceFlushAllProgressBuffers() {
+  for (const [projectId] of progressBuffers) {
+    if (progressFlushTimers.has(projectId)) {
+      clearTimeout(progressFlushTimers.get(projectId));
+      progressFlushTimers.delete(projectId);
+    }
+    flushProgressBuffer(projectId);
+  }
+}
+
+// Backward compatibility alias
+function appendProgressOutput(projectId, text) {
+  appendProgressBuffer(projectId, text);
 }
 
 /**
@@ -663,6 +803,12 @@ async function startProject(projectId, mainWindow) {
   updateProject(projectId, { status: 'running' });
   notifyStatusChange(mainWindow, projectId, 'running');
 
+  // Initialize output batcher for 60fps rendering
+  const batcher = new OutputBatcher(projectId, mainWindow, (chunk) => {
+    appendProgressBuffer(projectId, chunk);
+  });
+  outputBatchers.set(projectId, batcher);
+
   // Initialize engine state
   engines.set(projectId, {
     projectId,
@@ -677,7 +823,7 @@ async function startProject(projectId, mainWindow) {
     console.error(`Engine error for project ${projectId}:`, err);
     updateProject(projectId, { status: 'idle' });
     notifyStatusChange(mainWindow, projectId, 'idle');
-    engines.delete(projectId);
+    cleanupProjectResources(projectId);
   });
 
   return {
@@ -712,9 +858,25 @@ async function pauseProject(projectId) {
 
   updateProject(projectId, { status: 'paused' });
   notifyStatusChange(engine.mainWindow, projectId, 'paused');
-  engines.delete(projectId);
+  cleanupProjectResources(projectId);
 
   return { success: true, message: '引擎已暂停' };
+}
+
+function cleanupProjectResources(projectId) {
+  // Flush and destroy output batcher
+  const batcher = outputBatchers.get(projectId);
+  if (batcher) {
+    batcher.destroy();
+    outputBatchers.delete(projectId);
+  }
+  // Flush progress buffer to disk
+  if (progressFlushTimers.has(projectId)) {
+    clearTimeout(progressFlushTimers.get(projectId));
+    progressFlushTimers.delete(projectId);
+  }
+  flushProgressBuffer(projectId);
+  engines.delete(projectId);
 }
 
 function getEngineStatus(projectId) {
@@ -735,6 +897,11 @@ function clearTerminalHistory(projectId) {
   const progress = readProgress(projectId);
   if (!progress) return { success: false, error: 'No progress found' };
   writeProgress(projectId, { ...progress, lastOutput: '' });
+  // Also clear memory buffer
+  const buffer = progressBuffers.get(projectId);
+  if (buffer) {
+    buffer.content = '';
+  }
   return { success: true };
 }
 
@@ -744,6 +911,7 @@ function getTerminalHistory(projectId) {
     return { content: progress.lastOutput, logFile: progress?.lastLogFile || null };
   }
 
+  // Fallback: parse log file if no cached output
   if (!progress?.lastLogFile || !fs.existsSync(progress.lastLogFile)) {
     return { content: '', logFile: progress?.lastLogFile || null };
   }
@@ -810,4 +978,5 @@ module.exports = {
   getTerminalHistory,
   clearTerminalHistory,
   recoverProject,
+  forceFlushAllProgressBuffers,
 };

@@ -33,6 +33,7 @@ import {
   EyeOutlined,
   FolderOpenOutlined,
   HolderOutlined,
+  LeftOutlined,
   MoreOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
@@ -121,17 +122,24 @@ function sanitizeTerminalOutput(value) {
   if (!value) return '';
 
   return String(value)
-    .replace(/Warning: no stdin data received in 3s,[^\n]*\n?/g, '')
+    // Filter warning messages about stdin
+    .replace(/Warning: no stdin data received in \d+s,[^\n]*\n?/g, '')
+    // Filter long JSON lines that are protocol noise
     .split('\n')
     .filter((line) => {
       const trimmed = line.trim();
-      if (!trimmed) return true;
-      if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length > 140) {
+      if (!trimmed) return true; // Keep empty lines for formatting
+      // Filter long JSON objects that contain system/protocol fields
+      if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length > 200) {
         return !(
           trimmed.includes('"type":"system"') ||
           trimmed.includes('"tools":[') ||
           trimmed.includes('"permissionMode"') ||
-          trimmed.includes('"mcp__')
+          trimmed.includes('"mcp__') ||
+          trimmed.includes('"api_retry"') ||
+          trimmed.includes('"cost_usd"') ||
+          trimmed.includes('"duration_ms"') ||
+          trimmed.includes('"input_json_delta"')
         );
       }
       return true;
@@ -179,11 +187,16 @@ function MetricTile({ label, value, hint, tone }) {
   );
 }
 
-function NavButton({ active, icon, label, onClick }) {
+function NavButton({ active, icon, label, onClick, collapsed }) {
   return (
-    <button type="button" className={active ? 'nav-button is-active' : 'nav-button'} onClick={onClick}>
+    <button
+      type="button"
+      className={active ? 'nav-button is-active' : 'nav-button'}
+      onClick={onClick}
+      title={collapsed ? label : undefined}
+    >
       {icon}
-      <span>{label}</span>
+      {!collapsed && <span>{label}</span>}
     </button>
   );
 }
@@ -305,6 +318,10 @@ function TerminalPanel({ projectId }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);
   const fitRef = useRef(null);
+  const outputBufferRef = useRef('');
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [outputStats, setOutputStats] = useState({ lines: 0, rate: 0 });
+  const statsRef = useRef({ lines: 0, lastUpdate: Date.now(), chunks: 0 });
 
   useEffect(() => {
     if (!containerRef.current || terminalRef.current) {
@@ -350,8 +367,15 @@ function TerminalPanel({ projectId }) {
     terminalRef.current = terminal;
     fitRef.current = fitAddon;
 
+    // Track scroll position
+    terminal.onScroll(() => {
+      const viewport = terminal.buffer.active.viewportY;
+      const scrollback = terminal.buffer.active.length - terminal.rows;
+      setShowScrollButton(scrollback - viewport > 5);
+    });
+
     const ro = new ResizeObserver(() => {
-      fitRef.current?.fit();
+      try { fitRef.current?.fit(); } catch (e) {}
     });
     ro.observe(containerRef.current);
 
@@ -360,9 +384,28 @@ function TerminalPanel({ projectId }) {
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
+      outputBufferRef.current = '';
     };
   }, []);
 
+  // Update output stats periodically
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const elapsed = (now - statsRef.current.lastUpdate) / 1000;
+      if (elapsed >= 1) {
+        setOutputStats({
+          lines: statsRef.current.lines,
+          rate: Math.round(statsRef.current.chunks / elapsed),
+        });
+        statsRef.current.chunks = 0;
+        statsRef.current.lastUpdate = now;
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Load history when project changes
   useEffect(() => {
     let active = true;
 
@@ -370,9 +413,12 @@ function TerminalPanel({ projectId }) {
       if (!projectId || !terminalRef.current) return;
       const history = await window.vct.getTerminalHistory(projectId);
       if (active && terminalRef.current) {
+        const sanitized = sanitizeTerminalOutput(history?.content || '');
+        outputBufferRef.current = sanitized;
         terminalRef.current.clear();
-        terminalRef.current.write(sanitizeTerminalOutput(history?.content || ''));
-        fitRef.current?.fit();
+        terminalRef.current.write(sanitized);
+        statsRef.current.lines = sanitized.split('\n').length;
+        try { fitRef.current?.fit(); } catch (e) {}
       }
     }
 
@@ -383,12 +429,36 @@ function TerminalPanel({ projectId }) {
     };
   }, [projectId]);
 
+  // Listen for real-time data with incremental writes
   useEffect(() => {
-    const onData = ({ projectId: incomingProjectId, data }) => {
-      if (incomingProjectId === projectId && terminalRef.current) {
-        const printable = sanitizeTerminalOutput(data);
-        if (printable) {
-          terminalRef.current.write(printable);
+    const onData = ({ projectId: incomingProjectId, data, seq }) => {
+      if (incomingProjectId !== projectId || !terminalRef.current) return;
+
+      const sanitized = sanitizeTerminalOutput(data);
+      if (!sanitized) return;
+
+      // Incremental comparison: only write new content
+      if (seq !== undefined && seq > 0) {
+        // Batched data from output batcher - write incrementally
+        outputBufferRef.current += sanitized;
+        terminalRef.current.write(sanitized);
+      } else {
+        // Immediate data (phase headers, etc.) or legacy data
+        outputBufferRef.current += sanitized;
+        terminalRef.current.write(sanitized);
+      }
+
+      // Update stats
+      statsRef.current.lines += sanitized.split('\n').length - 1;
+      statsRef.current.chunks += 1;
+
+      // Auto-scroll to bottom if user is near the bottom
+      const term = terminalRef.current;
+      if (term.buffer?.active) {
+        const viewport = term.buffer.active.viewportY;
+        const scrollback = term.buffer.active.length - term.rows;
+        if (scrollback - viewport < 5) {
+          term.scrollToBottom();
         }
       }
     };
@@ -396,6 +466,8 @@ function TerminalPanel({ projectId }) {
     const onClear = ({ projectId: incomingProjectId }) => {
       if (incomingProjectId === projectId && terminalRef.current) {
         terminalRef.current.clear();
+        outputBufferRef.current = '';
+        statsRef.current.lines = 0;
       }
     };
 
@@ -408,16 +480,28 @@ function TerminalPanel({ projectId }) {
     };
   }, [projectId]);
 
+  const scrollToBottom = () => {
+    terminalRef.current?.scrollToBottom();
+    setShowScrollButton(false);
+  };
+
   return (
-    <div
-      ref={containerRef}
-      style={{
-        flex: 1,
-        minHeight: 0,
-        overflow: 'hidden',
-        background: '#101828',
-      }}
-    />
+    <div className="terminal-container">
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'hidden',
+          background: '#101828',
+        }}
+      />
+      {showScrollButton && (
+        <button className="terminal-scroll-btn" onClick={scrollToBottom} title="滚动到底部">
+          <DownOutlined />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -441,6 +525,7 @@ function AppView() {
   const [overviewCollapsed, setOverviewCollapsed] = useState(false);
   const [boardSearchText, setBoardSearchText] = useState('');
   const [boardStatusFilter, setBoardStatusFilter] = useState('all');
+  const [siderCollapsed, setSiderCollapsed] = useState(false);
   const [projectForm] = Form.useForm();
   const [taskForm] = Form.useForm();
 
@@ -767,10 +852,27 @@ function AppView() {
 
   return (
     <Layout className="app-shell">
-      <Sider width={320} className="project-sider">
-        <div className="brand-block">
-          <Title level={3}>VCT</Title>
-          <Text className="brand-subtitle">Visual Claude Task Manager</Text>
+      <Sider
+        width={260}
+        collapsedWidth={64}
+        collapsed={siderCollapsed}
+        className="project-sider"
+        trigger={null}
+      >
+        <div className="sider-header">
+          {!siderCollapsed && (
+            <div className="brand-block">
+              <Title level={4}>VCT</Title>
+            </div>
+          )}
+          <button
+            type="button"
+            className="sider-collapse-btn"
+            onClick={() => setSiderCollapsed(!siderCollapsed)}
+            title={siderCollapsed ? '展开侧边栏' : '收起侧边栏'}
+          >
+            {siderCollapsed ? <RightOutlined /> : <LeftOutlined />}
+          </button>
         </div>
 
         <div className="side-nav">
@@ -779,60 +881,89 @@ function AppView() {
             icon={<AppstoreOutlined />}
             label="项目工作台"
             onClick={() => setActiveView('workspace')}
+            collapsed={siderCollapsed}
           />
           <NavButton
             active={activeView === 'environment'}
             icon={<SettingOutlined />}
             label="本地环境"
             onClick={() => setActiveView('environment')}
+            collapsed={siderCollapsed}
           />
         </div>
 
-        <div className="section-header">
-          <Title level={5}>项目列表</Title>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateProjectModal}>
-            新建项目
-          </Button>
-        </div>
+        {!siderCollapsed && (
+          <>
+            <div className="section-header">
+              <Title level={5}>项目列表</Title>
+              <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openCreateProjectModal}>
+                新建
+              </Button>
+            </div>
 
-        <List
-          className="project-list"
-          dataSource={projects}
-          locale={{ emptyText: <Empty description="还没有项目" /> }}
-          renderItem={(project) => {
-            const meta = getProjectMeta(project.status);
-            return (
-              <List.Item
-                className={project.id === selectedProjectId ? 'project-item project-item-active' : 'project-item'}
-                onClick={() => {
-                  setSelectedProjectId(project.id);
-                  setActiveView('workspace');
-                }}
-              >
-                <div className="project-item-inner">
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Space className="space-between full-width">
-                      <Text strong>{project.name}</Text>
-                      <Dropdown menu={{ items: projectMenuItems(project) }} trigger={['click']}>
-                        <Button
-                          size="small"
-                          type="text"
-                          icon={<MoreOutlined />}
-                          onClick={(event) => event.stopPropagation()}
-                        />
-                      </Dropdown>
-                    </Space>
-                    <div className="project-item-meta">
-                      <Tag color={meta.color}>{meta.label}</Tag>
-                      <Text type="secondary">{project.agent || 'claude-code'}</Text>
+            <List
+              className="project-list"
+              dataSource={projects}
+              locale={{ emptyText: <Empty description="还没有项目" /> }}
+              renderItem={(project) => {
+                const meta = getProjectMeta(project.status);
+                return (
+                  <List.Item
+                    className={project.id === selectedProjectId ? 'project-item project-item-active' : 'project-item'}
+                    onClick={() => {
+                      setSelectedProjectId(project.id);
+                      setActiveView('workspace');
+                    }}
+                  >
+                    <div className="project-item-inner">
+                      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                        <Space className="space-between full-width">
+                          <Text strong className="project-name-text">{project.name}</Text>
+                          <Dropdown menu={{ items: projectMenuItems(project) }} trigger={['click']}>
+                            <Button
+                              size="small"
+                              type="text"
+                              icon={<MoreOutlined />}
+                              onClick={(event) => event.stopPropagation()}
+                            />
+                          </Dropdown>
+                        </Space>
+                        <div className="project-item-meta">
+                          <Tag color={meta.color} style={{ margin: 0 }}>{meta.label}</Tag>
+                        </div>
+                      </Space>
                     </div>
-                    <Text type="secondary" className="muted-line">{project.workDir}</Text>
-                  </Space>
-                </div>
-              </List.Item>
-            );
-          }}
-        />
+                  </List.Item>
+                );
+              }}
+            />
+          </>
+        )}
+
+        {siderCollapsed && (
+          <div className="sider-collapsed-projects">
+            {projects.slice(0, 5).map((project) => {
+              const meta = getProjectMeta(project.status);
+              return (
+                <button
+                  key={project.id}
+                  type="button"
+                  className={`sider-project-icon ${project.id === selectedProjectId ? 'is-active' : ''}`}
+                  onClick={() => {
+                    setSelectedProjectId(project.id);
+                    setActiveView('workspace');
+                  }}
+                  title={project.name}
+                >
+                  <span className="sider-project-dot" style={{ background: meta.color === 'success' ? '#22c55e' : meta.color === 'warning' ? '#f59e0b' : '#6b7280' }} />
+                </button>
+              );
+            })}
+            {projects.length > 5 && (
+              <Text className="sider-project-more">+{projects.length - 5}</Text>
+            )}
+          </div>
+        )}
       </Sider>
 
       <Layout>
@@ -1127,8 +1258,10 @@ function AppView() {
                   <div className="terminal-frame">
                     <div className="terminal-toolbar">
                       <div className="terminal-status">
-                        <span className="terminal-status-dot" />
-                        <Text className="terminal-toolbar-text">Live session</Text>
+                        <span className={`terminal-status-dot ${selectedProject?.status === 'running' ? 'is-active' : ''}`} />
+                        <Text className="terminal-toolbar-text">
+                          {selectedProject?.status === 'running' ? '运行中' : '空闲'}
+                        </Text>
                       </div>
                       <Text className="terminal-toolbar-text">
                         {progress?.currentPhase ? `阶段：${currentPhaseMeta.label}` : '等待启动'}
@@ -1294,8 +1427,10 @@ function AppView() {
         <div className="terminal-frame terminal-frame-fullscreen">
           <div className="terminal-toolbar">
             <div className="terminal-status">
-              <span className="terminal-status-dot" />
-              <Text className="terminal-toolbar-text">Live session</Text>
+              <span className={`terminal-status-dot ${selectedProject?.status === 'running' ? 'is-active' : ''}`} />
+              <Text className="terminal-toolbar-text">
+                {selectedProject?.status === 'running' ? '运行中' : '空闲'}
+              </Text>
             </div>
             <Text className="terminal-toolbar-text">
               {progress?.currentPhase ? `阶段：${currentPhaseMeta.label}` : '等待启动'}

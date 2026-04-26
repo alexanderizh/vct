@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(npm run *)",
-      "Bash(npx acorn *)"
+      "Bash(npx acorn *)",
+      "Bash(node -c main.js)",
+      "Bash(node -c src/main/services/engine.js)"
     ]
   }
 }

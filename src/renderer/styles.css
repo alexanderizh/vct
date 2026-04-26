@@ -64,21 +64,97 @@ body {
 
 .project-sider {
   background: var(--bg-sidebar) !important;
-  padding: 22px 14px 18px;
-  overflow: auto;
+  overflow: hidden;
   box-shadow: var(--shadow-sidebar);
   flex-shrink: 0;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.2s ease;
+  padding: 0;
+}
+
+.project-sider.ant-layout-sider-collapsed {
+  overflow: visible;
+}
+
+.sider-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 12px;
+  min-height: 52px;
+  flex-shrink: 0;
 }
 
 .brand-block {
-  color: white;
-  margin-bottom: 18px;
-  padding: 4px 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .brand-block .ant-typography {
   color: white;
+  margin: 0;
+}
+
+.sider-collapse-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.sider-collapse-btn:hover {
+  background: rgba(20, 184, 166, 0.2);
+  border-color: rgba(94, 234, 212, 0.3);
+  color: white;
+}
+
+.sider-collapsed-projects {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.sider-project-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.sider-project-icon:hover,
+.sider-project-icon.is-active {
+  background: rgba(20, 184, 166, 0.18);
+  border-color: rgba(94, 234, 212, 0.26);
+}
+
+.sider-project-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.sider-project-more {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
 }
 
 .brand-subtitle {
@@ -88,18 +164,21 @@ body {
 .side-nav {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 18px;
+  gap: 8px;
+  padding: 0 12px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
 .nav-button {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   width: 100%;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 16px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.04);
   color: rgba(255, 255, 255, 0.86);
   font: inherit;
@@ -111,19 +190,20 @@ body {
 .nav-button.is-active {
   background: rgba(20, 184, 166, 0.18);
   border-color: rgba(94, 234, 212, 0.26);
-  transform: translateY(-1px);
 }
 
 .nav-button span {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin: 18px 0 12px;
+  padding: 0 12px;
+  margin: 12px 0 8px;
+  flex-shrink: 0;
 }
 
 .section-header .ant-typography {
@@ -133,22 +213,25 @@ body {
 
 .project-list {
   background: transparent;
+  padding: 0 12px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .project-item {
   border: 1px solid transparent;
-  border-radius: 18px;
-  margin-bottom: 10px;
+  border-radius: 12px;
+  margin-bottom: 6px;
   padding: 0 !important;
   cursor: pointer;
-  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
 }
 
 .project-item:hover,
 .project-item-active {
   border-color: rgba(94, 234, 212, 0.28);
   background: rgba(15, 118, 110, 0.18);
-  box-shadow: inset 0 0 0 1px rgba(94, 234, 212, 0.08);
 }
 
 .project-item:hover {
@@ -157,7 +240,7 @@ body {
 
 .project-item-inner {
   width: 100%;
-  padding: 14px;
+  padding: 10px 12px;
 }
 
 .project-item .ant-typography,
@@ -166,10 +249,18 @@ body {
   color: rgba(255, 255, 255, 0.82) !important;
 }
 
+.project-name-text {
+  font-size: 13px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-item-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .top-header {
@@ -622,6 +713,54 @@ body {
 .terminal-fullscreen-modal .terminal-frame {
   flex: 1;
   min-height: 0;
+}
+
+.terminal-container {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #101828;
+}
+
+.terminal-scroll-btn {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(20, 184, 166, 0.9);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+  z-index: 10;
+}
+
+.terminal-scroll-btn:hover {
+  background: rgba(20, 184, 166, 1);
+  transform: scale(1.1);
+}
+
+.terminal-status-dot.is-active {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 5px rgba(20, 184, 166, 0.12); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 8px rgba(20, 184, 166, 0.2); }
+}
+
+.terminal-rate-indicator {
+  font-size: 11px;
+  color: rgba(226, 232, 240, 0.6);
+  margin-left: 8px;
 }
 
 .env-status-card {

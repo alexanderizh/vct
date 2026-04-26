@@ -27,9 +27,20 @@ function createWindow() {
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
+  // Flush all progress buffers before quitting
+  try {
+    require('./src/main/services/engine').forceFlushAllProgressBuffers();
+  } catch (e) {}
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+// Flush buffers before quitting (macOS Cmd+Q)
+app.on('before-quit', () => {
+  try {
+    require('./src/main/services/engine').forceFlushAllProgressBuffers();
+  } catch (e) {}
 });
 
 app.on('activate', () => {

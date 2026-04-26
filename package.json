@@ -14,10 +14,15 @@
     "appId": "com.vct.app",
     "productName": "VCT",
     "files": [
-      "dist/**/*"
+      "main.js",
+      "preload.js",
+      "dist/index.html",
+      "dist/renderer.js",
+      "src/main/**/*"
     ],
     "mac": {
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "identity": null
     }
   },
   "dependencies": {

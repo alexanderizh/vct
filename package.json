@@ -1,6 +1,6 @@
 {
   "name": "vct",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "VCT - Visual Claude Code Task Manager",
   "main": "main.js",
   "scripts": {

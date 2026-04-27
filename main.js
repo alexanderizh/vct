@@ -1,5 +1,38 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
+const { execSync } = require('child_process');
+
+// ========== 修复 macOS GUI 应用的 PATH 环境变量 ==========
+// GUI 应用不会继承终端的 PATH，导致找不到 npm 全局安装的 CLI
+if (process.platform === 'darwin') {
+  try {
+    // 从登录 shell 获取完整的 PATH
+    const shellPath = execSync('/bin/zsh -l -c "echo $PATH"', { encoding: 'utf8', timeout: 5000 }).trim();
+    if (shellPath) {
+      process.env.PATH = shellPath;
+    }
+  } catch (e) {
+    // 如果 zsh 不可用，尝试 bash
+    try {
+      const shellPath = execSync('/bin/bash -l -c "echo $PATH"', { encoding: 'utf8', timeout: 5000 }).trim();
+      if (shellPath) {
+        process.env.PATH = shellPath;
+      }
+    } catch (e2) {
+      // 回退：手动添加常见路径
+      const home = process.env.HOME || '/Users/' + (process.env.USER || '');
+      const fallbackPaths = [
+        '/usr/local/bin',
+        '/usr/local/sbin',
+        '/opt/homebrew/bin',
+        '/opt/homebrew/sbin',
+        `${home}/.local/bin`,
+        `${home}/.npm-global/bin`,
+      ];
+      process.env.PATH = (process.env.PATH || '') + ':' + fallbackPaths.join(':');
+    }
+  }
+}
 
 let mainWindow;
 
